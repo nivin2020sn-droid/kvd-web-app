@@ -157,7 +157,11 @@ export default function TabletView() {
       <View style={[styles.header, { borderBottomColor: border }]}>
         <View style={styles.headerLeft}>
           {settings?.logo_base64 ? (
-            <Image source={{ uri: settings.logo_base64 }} style={styles.logo} />
+            <Image
+              source={{ uri: settings.logo_base64 }}
+              style={styles.logo}
+              resizeMode="contain"
+            />
           ) : (
             <View style={[styles.logoFallback, { borderColor: textColor }]}>
               <Text style={[styles.logoFallbackText, { color: textColor }]}>R</Text>
@@ -410,7 +414,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 16 },
-  logo: { width: 56, height: 56, resizeMode: "contain" },
+  logo: { width: 56, height: 56 },
   logoFallback: {
     width: 56,
     height: 56,

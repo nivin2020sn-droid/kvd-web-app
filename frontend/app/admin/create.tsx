@@ -192,7 +192,7 @@ export default function CreateTask() {
           time_to: timeTo,
         },
       });
-      router.back();
+      router.replace("/admin");
     } catch (e: any) {
       Alert.alert("Fehler", e?.message || "Fehler");
     } finally {
