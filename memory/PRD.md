@@ -12,15 +12,29 @@ Keine Mitarbeiter-Konten. Nur ein einfaches Admin-Passwort.
 - **Status-Anzeige**: kleiner Farb-Dot + deutscher Text in Pillen-Form in der oberen rechten Ecke jeder Karte.
 - **Aktions-Buttons**: Glass-Pillen (klein, transparent, dünner Rahmen, farbiger Dot als Präfix). Keine großen farbigen Buttons.
 
-## Status-Labels (Deutsch)
+## Status-Labels (Deutsch) — v1.2
 | Intern | Anzeige | Dot-Farbe |
 |---|---|---|
-| pending | Offen | grau |
-| accepted | Angenommen | gelb |
-| finished | Erledigt | grün |
-| cannot_accept | Nicht annehmbar | orange |
-| not_finished | Nicht beendbar | orange |
-| not_done | Nicht erledigt | rot |
+| pending | Neu | blau `#3B82F6` |
+| accepted | Angenommen | orange `#FF9500` |
+| finished | Erledigt | grün `#00E676` |
+| cannot_accept | Nicht annehmbar | dunkelrot `#991B1B` |
+| not_finished | Nicht beendbar | dunkelrot `#991B1B` |
+| not_done | Nicht erledigt | rot `#FF3B30` |
+
+## Tablet-Header (v1.2)
+- Zeile 1: Logo (links) + Exit-Button (rechts)
+- Zeile 2: **PLAN HEUTE** (bold, groß) · Datum (mittel) · Uhrzeit (kleiner, rechts)
+- Dunkler Overlay `rgba(0,0,0,0.70)` über jedem Hintergrundbild → optimale Lesbarkeit
+- Aufgaben-Karten: semi-solide `rgba(15,15,18,0.88)` mit dünnem Rand + Shadow
+
+## Admin-Karte (v1.2)
+Zeigt pro Aufgabe:
+- Typ · Haus / Station · Beschreibung · Personen · Zeitraum
+- Status-Badge
+- **Angenommen um HH:MM** (grün) — falls akzeptiert
+- **Erledigt um HH:MM** (grün) — falls beendet
+- Grund-Zeile(n) — falls „Nicht …"-Status
 
 ## Admin-Funktionen
 - Geräte-Auswahl → Admin-Login (Standard `admin123`)
