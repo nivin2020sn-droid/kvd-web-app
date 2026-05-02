@@ -20,7 +20,7 @@ import { useWebSocket } from "../../src/lib/useWebSocket";
 import { colors, presetBackgrounds, isDarkBg } from "../../src/lib/theme";
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "Offen",
+  pending: "Neu",
   accepted: "Angenommen",
   finished: "Erledigt",
   cannot_accept: "Nicht annehmbar",
@@ -29,12 +29,12 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const STATUS_DOT: Record<string, string> = {
-  pending: "#9CA3AF",
-  accepted: colors.yellow,
-  finished: colors.green,
-  cannot_accept: colors.orange,
-  not_finished: colors.orange,
-  not_done: colors.red,
+  pending: "#3B82F6",      // blue
+  accepted: "#FF9500",     // orange
+  finished: "#00E676",     // green
+  cannot_accept: "#991B1B", // dark red
+  not_finished: "#991B1B", // dark red
+  not_done: "#FF3B30",     // red
 };
 
 export default function TabletView() {
@@ -126,13 +126,13 @@ export default function TabletView() {
   const bgImage = bgType === "image" ? bgValue : null;
   const dark = isDarkBg(bgColor);
 
-  // Glass surface config
-  const cardBg = dark ? "rgba(20,20,22,0.55)" : "rgba(255,255,255,0.55)";
-  const cardBorder = dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)";
+  // Semi-solid glass cards (readable on top of any background)
+  const cardBg = dark ? "rgba(15,15,18,0.88)" : "rgba(255,255,255,0.92)";
+  const cardBorder = dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)";
   const textColor = dark ? "#FFFFFF" : "#0A0A0A";
   const textMuted = dark ? "rgba(255,255,255,0.65)" : "rgba(10,10,10,0.6)";
-  const btnBg = dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.05)";
-  const btnBorder = dark ? "rgba(255,255,255,0.18)" : "rgba(0,0,0,0.12)";
+  const btnBg = dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)";
+  const btnBorder = dark ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.12)";
 
   const dateStr = now.toLocaleDateString("de-DE", {
     weekday: "long",
@@ -147,14 +147,10 @@ export default function TabletView() {
 
   const Content = (
     <View style={styles.container} testID="tablet-screen">
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          { backgroundColor: cardBg, borderColor: cardBorder },
-        ]}
-      >
-        <View style={styles.headerLeft}>
+      {/* Header - 2 rows */}
+      <View style={styles.headerWrap}>
+        {/* Row 1: Logo only */}
+        <View style={styles.headerLogoRow}>
           {settings?.logo_base64 ? (
             <Image
               source={{ uri: settings.logo_base64 }}
@@ -166,15 +162,6 @@ export default function TabletView() {
               <Text style={[styles.logoFallbackText, { color: textColor }]}>R</Text>
             </View>
           )}
-          <View>
-            <Text style={[styles.headerTitle, { color: textColor }]}>
-              REINIGUNG HEUTE
-            </Text>
-            <Text style={[styles.headerSub, { color: textMuted }]}>{dateStr}</Text>
-          </View>
-        </View>
-        <View style={styles.headerRight}>
-          <Text style={[styles.clock, { color: textColor }]}>{timeStr}</Text>
           <TouchableOpacity
             onPress={() => router.replace("/")}
             style={styles.exitBtn}
@@ -182,6 +169,13 @@ export default function TabletView() {
           >
             <Ionicons name="exit-outline" size={20} color={textMuted} />
           </TouchableOpacity>
+        </View>
+
+        {/* Row 2: PLAN HEUTE + date + time */}
+        <View style={styles.headerInfoRow}>
+          <Text style={[styles.planHeute, { color: textColor }]}>PLAN HEUTE</Text>
+          <Text style={[styles.dateText, { color: textMuted }]}>{dateStr}</Text>
+          <Text style={[styles.clockText, { color: textMuted }]}>{timeStr}</Text>
         </View>
       </View>
 
@@ -406,7 +400,7 @@ export default function TabletView() {
           style={{ flex: 1 }}
           resizeMode="cover"
         >
-          {Content}
+          <View style={styles.bgOverlay}>{Content}</View>
         </ImageBackground>
       ) : (
         Content
@@ -449,40 +443,52 @@ function GlassBtn({
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  bgOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.70)" },
   container: { flex: 1 },
-  header: {
-    margin: 16,
-    marginBottom: 4,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 20,
-    borderWidth: 1,
+  headerWrap: {
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 16,
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
+  },
+  headerLogoRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
   },
-  headerLeft: { flexDirection: "row", alignItems: "center", gap: 14 },
-  logo: { width: 48, height: 48 },
+  logo: { width: 52, height: 52 },
   logoFallback: {
-    width: 48,
-    height: 48,
+    width: 52,
+    height: 52,
     borderWidth: 1.5,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
-  logoFallbackText: { fontSize: 22, fontWeight: "900" },
-  headerTitle: { fontSize: 20, fontWeight: "900", letterSpacing: 2 },
-  headerSub: { fontSize: 12, letterSpacing: 1, marginTop: 2 },
-  headerRight: { flexDirection: "row", alignItems: "center", gap: 12 },
-  clock: { fontSize: 28, fontWeight: "800", letterSpacing: 1 },
-  exitBtn: { padding: 6 },
+  logoFallbackText: { fontSize: 24, fontWeight: "900" },
+  exitBtn: { padding: 8 },
+  headerInfoRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    flexWrap: "wrap",
+    gap: 20,
+  },
+  planHeute: {
+    fontSize: 32,
+    fontWeight: "900",
+    letterSpacing: 3,
+  },
+  dateText: {
+    fontSize: 18,
+    fontWeight: "500",
+  },
+  clockText: {
+    fontSize: 16,
+    fontWeight: "400",
+    marginLeft: "auto",
+  },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   emptyBox: {
     alignItems: "center",

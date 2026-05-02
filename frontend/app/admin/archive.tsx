@@ -14,7 +14,7 @@ import { api, Task, SimpleItem } from "../../src/lib/api";
 import { colors } from "../../src/lib/theme";
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "OFFEN",
+  pending: "NEU",
   accepted: "ANGENOMMEN",
   finished: "ERLEDIGT",
   cannot_accept: "NICHT ANNEHMBAR",
@@ -23,12 +23,12 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const STATUS_COLOR: Record<string, string> = {
-  pending: colors.textMutedDark,
-  accepted: colors.yellow,
-  finished: colors.green,
-  cannot_accept: colors.orange,
-  not_finished: colors.orange,
-  not_done: colors.red,
+  pending: "#3B82F6",
+  accepted: "#FF9500",
+  finished: "#00E676",
+  cannot_accept: "#991B1B",
+  not_finished: "#991B1B",
+  not_done: "#FF3B30",
 };
 
 export default function Archive() {
@@ -112,6 +112,16 @@ export default function Archive() {
                 <Text style={styles.taskPersons}>
                   {item.person_ids.map(personName).join(", ") || "Keine Personen"}
                 </Text>
+                {!!item.accepted_at && (
+                  <Text style={styles.timeStamp}>
+                    ✓ Angenommen: {new Date(item.accepted_at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
+                  </Text>
+                )}
+                {!!item.finished_at && (
+                  <Text style={styles.timeStamp}>
+                    ✓ Erledigt: {new Date(item.finished_at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
+                  </Text>
+                )}
                 {!!item.accept_reason && (
                   <Text style={styles.reason}>↳ Nicht annehmbar: {item.accept_reason}</Text>
                 )}
@@ -210,4 +220,5 @@ const styles = StyleSheet.create({
   badge: { borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4 },
   badgeText: { fontSize: 10, fontWeight: "800", letterSpacing: 1 },
   reason: { color: colors.orange, fontSize: 12, fontStyle: "italic" },
+  timeStamp: { color: colors.green, fontSize: 12, fontWeight: "600" },
 });

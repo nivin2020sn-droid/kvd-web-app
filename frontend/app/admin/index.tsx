@@ -17,7 +17,7 @@ import { useWebSocket } from "../../src/lib/useWebSocket";
 import { colors } from "../../src/lib/theme";
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "OFFEN",
+  pending: "NEU",
   accepted: "ANGENOMMEN",
   finished: "ERLEDIGT",
   cannot_accept: "NICHT ANNEHMBAR",
@@ -26,12 +26,12 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const STATUS_COLOR: Record<string, string> = {
-  pending: colors.textMutedDark,
-  accepted: colors.yellow,
-  finished: colors.green,
-  cannot_accept: colors.orange,
-  not_finished: colors.orange,
-  not_done: colors.red,
+  pending: "#3B82F6",
+  accepted: "#FF9500",
+  finished: "#00E676",
+  cannot_accept: "#991B1B",
+  not_finished: "#991B1B",
+  not_done: "#FF3B30",
 };
 
 export default function AdminHome() {
@@ -211,6 +211,16 @@ export default function AdminHome() {
                   <Ionicons name="trash-outline" size={20} color={colors.red} />
                 </TouchableOpacity>
               </View>
+              {!!item.accepted_at && (
+                <Text style={styles.timeStamp}>
+                  ✓ Angenommen: {new Date(item.accepted_at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
+                </Text>
+              )}
+              {!!item.finished_at && (
+                <Text style={styles.timeStamp}>
+                  ✓ Erledigt: {new Date(item.finished_at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
+                </Text>
+              )}
               {!!item.accept_reason && (
                 <Text style={styles.reasonText}>↳ Nicht annehmbar: {item.accept_reason}</Text>
               )}
@@ -338,6 +348,7 @@ const styles = StyleSheet.create({
   },
   taskTime: { color: colors.yellow, fontSize: 14, fontWeight: "800" },
   reasonText: { color: colors.orange, fontSize: 12, marginTop: 2, fontStyle: "italic" },
+  timeStamp: { color: colors.green, fontSize: 12, marginTop: 2, fontWeight: "600" },
   archiveAllBtn: {
     backgroundColor: colors.yellow,
     flexDirection: "row",

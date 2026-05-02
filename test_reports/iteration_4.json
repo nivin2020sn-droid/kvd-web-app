@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 4 testing complete — all 11 requested design-polish items verified. Backend regression: 34/34 pytest tests pass (no schema changes). Frontend verified via Playwright at both tablet (1280x900) and mobile (390x844) viewports. Tablet header now uses the 2-row layout exactly as spec: Row 1 = logo fallback 'R' on the left + exit button on the right; Row 2 = 'PLAN HEUTE' (bold, large) + 'Samstag, 02. Mai 2026' (date, medium, muted) + '11:26' (time, smaller, right). Card bg measured as rgba(15, 15, 18, 0.88) with 1px border rgba(255, 255, 255, 0.1) ✓. Dark overlay rgba(0,0,0,0.70) is wired under ImageBackground in code (/app/frontend/app/tablet/index.tsx L446) — it only renders when background_type='image' (current preset='dark' so overlay is not in DOM, which is correct behavior). Status pills verified on tablet + admin + archive: Neu=blue #3B82F6, Angenommen=orange #FF9500, Erledigt=green #00E676, Nicht erledigt=red #FF3B30, Nicht annehmbar / Nicht beendbar = dark red #991B1B (constants at tablet/index.tsx L31-38 and admin/index.tsx). Admin task list shows '✓ Angenommen: 11:26' and '✓ Erledigt: 11:26' directly under the time range (verified 2 lines on live admin with seeded accepted + finished tasks). Archive view for 2026-05-02 shows 10 '✓ Angenommen:' + 18 '✓ Erledigt:' timestamps in HH:MM format. Interactive flow: click Annehmen on tablet → status='accepted' + accepted_at set; click Beenden → status='finished' + finished_at set; click 'Nicht erledigt' → reason modal opens, submit 'Werkzeug fehlt' → status='not_done' + not_done_reason='Werkzeug fehlt'. Label migration verified: pending now displays as 'Neu' on tablet (was 'Offen') and 'NEU' (uppercase badge) on admin.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "multiple", "issue": "(carry-over from prior iterations, non-blocking) Console warnings: 'shadow* style props are deprecated. Use boxShadow.', 'Image: style.resizeMode is deprecated. Use props.resizeMode.', 'props.pointerEvents is deprecated. Use style.pointerEvents'. No functional impact."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_cleaning_api.py",
+    "/app/backend/tests/test_update_info.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "tablet/index.tsx STATUS_LABEL (L22-29) and STATUS_DOT (L31-38) map exactly to spec: pending=Neu/blue, accepted=Angenommen/orange, finished=Erledigt/green, cannot_accept+not_finished=dark red, not_done=red.",
+    "tablet/index.tsx L130 cardBg = dark ? 'rgba(15,15,18,0.88)' : 'rgba(255,255,255,0.92)' — semi-solid per spec; confirmed in DOM computed style (rgba(15, 15, 18, 0.88)).",
+    "tablet/index.tsx L446 bgOverlay: backgroundColor rgba(0,0,0,0.70) wraps ImageBackground for readability over bright images — present only for background_type='image' or 'color'; current preset 'dark' does not render it (by design).",
+    "Header structure (tablet/index.tsx L150-180) uses two Views: headerLogoRow (logo + exit) then headerInfoRow (PLAN HEUTE + dateText + clockText). Matches 2-row spec.",
+    "admin/index.tsx L214-223 correctly renders accepted_at and finished_at via new Date(...).toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'}) — 24h HH:MM format. Same code in archive.tsx L115-124.",
+    "pending label was changed across tablet, admin and archive to 'Neu' — consistency verified."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (34/34)", "frontend": "100% on all 11 requested items — header layout, card bg, overlay wiring, status colors (6), admin timestamps, archive timestamps, Annehmen→accepted+accepted_at, Beenden→finished+finished_at, Nicht erledigt reason-modal flow, 'Neu' label migration, regression on admin login/task creation/archive-now."},
+  "seed_data_creation": "6 tasks seeded via POST /api/tasks during this run (4 for status-color snapshot + 2 for interactive flow tests). All archived at end via POST /api/tasks/archive-now so next iteration gets a clean today list.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 4 is complete and clean. No issues found. Backend unchanged since iteration 3. Frontend design-polish changes fully verified. Admin password still admin123; token still 'admin-session-token'; BASE = EXPO_PUBLIC_BACKEND_URL. If testing after deployment of future iterations, run pytest /app/backend/tests/ first (should stay at 34 pass), then tablet (/tablet) → login (/admin/login) → list (/admin) → archive (/admin/archive) → date detail. Seeded tasks were archived at end so /api/tasks/today starts empty for next day."
+}
