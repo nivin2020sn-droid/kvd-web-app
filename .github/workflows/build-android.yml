@@ -13,11 +13,34 @@ concurrency:
 
 jobs:
   build:
-    name: Build Debug + Release APK
+    name: Build Debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
+      - name: Free up disk space
+        run: |
+          echo "=== Disk BEFORE cleanup ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android/sdk/ndk || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo rm -rf /usr/local/share/chromium || true
+          sudo rm -rf /usr/local/lib/node_modules || true
+          sudo rm -rf /opt/az || true
+          sudo rm -rf /opt/microsoft || true
+          sudo rm -rf /opt/google/chrome || true
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"/Ruby || true
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"/PyPy || true
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"/go || true
+          sudo docker system prune -af --volumes || true
+          sudo apt-get clean
+          echo "=== Disk AFTER cleanup ==="
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -30,8 +53,7 @@ jobs:
           elif [ -f "package.json" ]; then
             DIR="."
           else
-            echo "::error::Could not find package.json"
-            ls -la
+            echo "::error::package.json not found"
             exit 1
           fi
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
@@ -56,18 +78,14 @@ jobs:
         run: |
           if [ -f "yarn.lock" ]; then
             corepack enable || true
-            yarn install --frozen-lockfile
+            yarn install --frozen-lockfile --prefer-offline
           elif [ -f "package-lock.json" ]; then
-            npm ci
+            npm ci --prefer-offline --no-audit
           else
-            npm install
+            npm install --no-audit
           fi
 
-      - name: Show app.json
-        working-directory: ${{ steps.detect.outputs.dir }}
-        run: cat app.json || cat app.config.js || true
-
-      - name: Expo prebuild (generate native android project)
+      - name: Expo prebuild (android)
         working-directory: ${{ steps.detect.outputs.dir }}
         env:
           EXPO_NO_TELEMETRY: 1
@@ -78,74 +96,53 @@ jobs:
         working-directory: ${{ steps.detect.outputs.dir }}/android
         run: chmod +x ./gradlew
 
+      - name: Disk check before gradle
+        run: df -h /
+
       - name: Build Debug APK
         working-directory: ${{ steps.detect.outputs.dir }}/android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
-
-      - name: Build Release APK
-        id: build_release
-        continue-on-error: true
-        working-directory: ${{ steps.detect.outputs.dir }}/android
         env:
-          GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=false"
-        run: |
-          ./gradlew assembleRelease \
-            --no-daemon \
-            --stacktrace \
-            -Pandroid.enableR8.fullMode=false \
-            -PenableProguardInReleaseBuilds=false \
-            -PenableShrinkResourcesInReleaseBuilds=false \
-            || {
-              echo "::warning::Release APK build failed — Debug APK is still available in Artifacts."
-              echo "release_failed=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            }
+          GRADLE_OPTS: "-Xmx3g -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g"
+        run: ./gradlew assembleDebug --no-daemon --console=plain
 
-      - name: List built APKs
+      - name: Disk check after gradle
         if: always()
-        working-directory: ${{ steps.detect.outputs.dir }}
+        run: df -h /
+
+      - name: Remove gradle cache to save space
+        if: always()
         run: |
-          echo "--- DEBUG ---"
-          ls -la android/app/build/outputs/apk/debug/ || true
-          echo "--- RELEASE ---"
-          ls -la android/app/build/outputs/apk/release/ || true
+          rm -rf ~/.gradle/caches/transforms-* || true
+          rm -rf ~/.gradle/caches/build-cache-* || true
+          rm -rf ${{ steps.detect.outputs.dir }}/android/.gradle || true
+          rm -rf ${{ steps.detect.outputs.dir }}/android/app/build/intermediates || true
+          rm -rf ${{ steps.detect.outputs.dir }}/android/app/build/tmp || true
+
+      - name: List built APK
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: ls -la android/app/build/outputs/apk/debug/ || true
 
       - name: Upload Debug APK
-        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: cleaning-app-debug-${{ github.sha }}
           path: ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
-
-      - name: Upload Release APK
-        if: success() || failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cleaning-app-release-${{ github.sha }}
-          path: ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
-          retention-days: 30
+          compression-level: 0
 
       - name: Build summary
         if: always()
         run: |
-          DEBUG_STATUS="❌ Fehlgeschlagen"
-          RELEASE_STATUS="❌ Fehlgeschlagen"
-          if [ -n "$(find ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/debug -name '*.apk' 2>/dev/null)" ]; then
-            DEBUG_STATUS="✅ Erfolgreich"
-          fi
-          if [ -n "$(find ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/release -name '*.apk' 2>/dev/null)" ]; then
-            RELEASE_STATUS="✅ Erfolgreich"
-          fi
           echo "### Build Ergebnis :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Frontend dir: \`${{ steps.detect.outputs.dir }}\`" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$(find ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/debug -name '*.apk' 2>/dev/null)" ]; then
+            echo "✅ **Debug APK erfolgreich gebaut**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Artifact: \`cleaning-app-debug-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Debug APK Build fehlgeschlagen**" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Variante | Status | Artifact |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|--------|----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Debug APK   | $DEBUG_STATUS   | \`cleaning-app-debug-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Release APK | $RELEASE_STATUS | \`cleaning-app-release-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Hinweis**: Beide APKs sind mit dem Debug-Keystore signiert — perfekt zum manuellen Installieren auf eigenen Geräten." >> $GITHUB_STEP_SUMMARY
+          echo "> Release APK ist vorübergehend deaktiviert (Platzsparen)." >> $GITHUB_STEP_SUMMARY
+          echo "> Debug APK ist vollständig funktionsfähig für interne Verteilung." >> $GITHUB_STEP_SUMMARY
