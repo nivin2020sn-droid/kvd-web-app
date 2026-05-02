@@ -289,6 +289,26 @@ async def get_archive(date: Optional[str] = None):
 async def seed_defaults(_: bool = Depends(require_admin)):
     return {"ok": True}
 
+import json
+
+# Update info endpoint (reads from data/update.json, editable at runtime)
+UPDATE_FILE = ROOT_DIR / "data" / "update.json"
+
+@api_router.get("/update-info")
+async def get_update_info():
+    try:
+        if UPDATE_FILE.exists():
+            with open(UPDATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"update-info read error: {e}")
+    return {
+        "latest_version": "1.0.0",
+        "download_url": "",
+        "changelog": "",
+        "mandatory": False,
+    }
+
 # WebSocket
 @app.websocket("/api/ws")
 async def websocket_endpoint(ws: WebSocket):

@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 2 review focused on (a) new GET /api/update-info endpoint (hot-reload from /app/backend/data/update.json) and (b) UI redesign of tablet (uniform glass-dark cards + status dot+label) and Einstellungen update-check section. Backend: 34/34 pytest tests pass (29 regression + 5 new for /update-info incl. hot-reload of update.json without server restart and verified revert). Frontend (tablet 1280x800 + admin mobile 390x844): tablet renders all 3 cards (Offen / Angenommen / Erledigt) with identical glass-dark transparent backgrounds, rounded corners, status dot+German label pill (Offen=grey, Angenommen=yellow, Erledigt=green), and small glass-pill action buttons (Annehmen, Beenden, Nicht annehmbar, Nicht beendbar, Nicht erledigt). Admin → Einstellungen shows v1.0.0 (testID current-version), 'Nach Updates suchen' returns 'Sie haben die neueste Version' when equal; after bumping update.json on disk to 2.5.0 (no restart), latest-version updates to v2.5.0, changelog displays under 'Änderungen:', and 'UPDATE HERUNTERLADEN' button (testID download-update-btn) appears. One layout bug found: several styles referenced in settings.tsx are MISSING from StyleSheet (visible overlap in screenshot).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/update-info", "issue": "On JSON read failure logger.error is called but `logger` is defined AFTER this route in server.py (line 366 vs route at line 304). If update.json read ever throws, the logger lookup may also fail. Move logger init above api_router or use a module-level logger before routes."},
+      {"endpoint": "POST /api/seed-defaults", "issue": "Carry-over from iter 1: endpoint is a no-op (returns {ok:true}); seeding actually happens in startup event."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "/app/frontend/app/admin/settings.tsx APP-UPDATE section", "issue": "StyleSheet.create at bottom of file is MISSING the following style keys that are referenced in the JSX: versionRow, versionLabel, versionValue, statusInfo, statusInfoText, changelogBox, changelogLabel, changelogText, dataHint. Result (visible in screenshot /tmp/settings_update_available.png): 'Aktuelle Version v1.0.0' overlaps with 'Neueste Version v2.5.0' on the same horizontal line, and the changelog text 'TEST iter2 changelog' overlaps with the 'Nach Updates suchen' button. Functionally everything works (data loads, version compare correct, download button toggles correctly), but the section is visually broken without these styles.", "testID": "current-version, latest-version, check-updates-btn, download-update-btn", "priority": "HIGH"},
+      {"component": "/app/frontend/app/tablet/index.tsx task cards", "issue": "Missing testID='task-card-{id}' on the card root element. Cards render correctly but cannot be selected by automated tests via testID — tests have to fall back to text matching.", "testID": "task-card-{id}", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/admin/settings APP-UPDATE", "issues": ["Because of the missing styles above, version row has no flexDirection:'row', no justify-content, and no spacing — labels stack overlap. Add versionRow:{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:12}, versionLabel:{color:colors.textMutedDark,fontSize:11,letterSpacing:2}, versionValue:{color:colors.textDark,fontWeight:'900',fontSize:18}, statusInfo:{flexDirection:'row',alignItems:'center',gap:6,marginBottom:10}, statusInfoText:{color:colors.textDark,fontSize:13}, changelogBox:{backgroundColor:colors.surfaceDark,borderWidth:1,borderColor:colors.borderDark,padding:12,marginBottom:12,borderRadius:6}, changelogLabel:{color:colors.textMutedDark,fontSize:11,letterSpacing:2,marginBottom:4}, changelogText:{color:colors.textDark,fontSize:13,lineHeight:18}, dataHint:{color:colors.textMutedDark,fontSize:11,marginTop:14,lineHeight:16}."]}
+    ],
+    "react_native_issues": [
+      {"component": "Multiple shadow style usages", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Non-blocking RN-web warning, surfaces 3x in tablet view."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_cleaning_api.py",
+    "/app/backend/tests/test_update_info.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "HIGH: Add the 9 missing styles (versionRow, versionLabel, versionValue, statusInfo, statusInfoText, changelogBox, changelogLabel, changelogText, dataHint) to StyleSheet.create at bottom of /app/frontend/app/admin/settings.tsx so the APP-UPDATE section renders without overlap (suggested values in design_issues).",
+    "LOW: Add testID='task-card-{id}' to the card root in /app/frontend/app/tablet/index.tsx for future automated regression on per-card style/state.",
+    "LOW: Move `logger = logging.getLogger(__name__)` (and basicConfig) to the top of /app/backend/server.py before the route definitions — currently /update-info references logger which is only defined further down."
+  ],
+  "critical_code_review_comments": [
+    "Hot-reload mechanism is correctly implemented: GET /api/update-info opens and parses /app/backend/data/update.json on every request, so JSON edits are reflected without restart (verified by test).",
+    "compareVersions() in settings.tsx is a clean numeric semver compare and behaves correctly for 1.0.0 vs 2.5.0.",
+    "Update.json fields exactly match contract: latest_version / download_url / changelog / mandatory.",
+    "Default fallback inside /api/update-info handler returns {latest_version:'1.0.0', download_url:'', changelog:'', mandatory:False} so the endpoint never 5xxs even if the file is missing.",
+    "Server still does not authenticate /api/update-info — fine for product (clients need it) but worth noting."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_update_info.py (created — 5 new tests for /update-info incl. hot-reload, default-shape, no-auth, revert)"
+  ],
+  "success_rate": {"backend": "100% (34/34)", "frontend": "5/6 — tablet redesign + update-check flow + hot-reload all work; settings APP-UPDATE section has overlap due to missing styles"},
+  "seed_data_creation": "3 today-tasks created via in-page fetch (UI-TEST iter2 A/B/C) to verify card styling for pending/accepted/finished, then archived via POST /api/tasks/archive-now to keep today's list clean. update.json was temporarily set to 2.5.0 and restored from /tmp/update_backup.json after testing.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend has 34 tests in /app/backend/tests/ (test_cleaning_api.py + test_update_info.py). Hot-reload of update.json works as expected. Admin password admin123 → token 'admin-session-token'. The only failing visual area is /admin/settings APP-UPDATE — styles are missing in StyleSheet, so labels overlap. Functionally everything else (logos, background, password change, update check, download button toggling) is fine. Tablet UI matches iter-2 spec exactly: all cards same glass-dark style, status dot+label pill, glass-pill action buttons.",
+  "rca_of_issue": "ROOT CAUSE for settings overlap: In /app/frontend/app/admin/settings.tsx, the JSX at lines 263-334 references styles.versionRow / versionLabel / versionValue / statusInfo / statusInfoText / changelogBox / changelogLabel / changelogText / dataHint, but the StyleSheet.create({...}) block at lines 340-422 only defines: safe, header, headerTitle, sectionTitle, logoBox, logoPreview, btnRow, btn, btnText, btnGhost, btnGhostText, colorRow, colorChip, colorChipSel, bgPreviewBox, bgPreview, input, btnPrimary, btnPrimaryText. The 9 update-related styles were not added. React Native silently treats undefined style entries as `undefined`, so elements render without flex/spacing — they collapse onto each other. REPRO: open /admin/settings, click 'Nach Updates suchen' twice (after bumping update.json to a higher version) — observe overlap. FIX: append the 9 styles listed in design_issues."
+}

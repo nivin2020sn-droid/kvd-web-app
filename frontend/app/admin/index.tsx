@@ -19,9 +19,9 @@ import { colors } from "../../src/lib/theme";
 const STATUS_LABEL: Record<string, string> = {
   pending: "OFFEN",
   accepted: "ANGENOMMEN",
-  finished: "BEENDET",
+  finished: "ERLEDIGT",
   cannot_accept: "NICHT ANNEHMBAR",
-  not_finished: "NICHT BEENDET",
+  not_finished: "NICHT BEENDBAR",
   not_done: "NICHT ERLEDIGT",
 };
 
@@ -215,7 +215,7 @@ export default function AdminHome() {
                 <Text style={styles.reasonText}>↳ Nicht annehmbar: {item.accept_reason}</Text>
               )}
               {!!item.not_finished_reason && (
-                <Text style={styles.reasonText}>↳ Nicht beendet: {item.not_finished_reason}</Text>
+                <Text style={styles.reasonText}>↳ Nicht beendbar: {item.not_finished_reason}</Text>
               )}
               {!!item.not_done_reason && (
                 <Text style={styles.reasonText}>↳ Nicht erledigt: {item.not_done_reason}</Text>

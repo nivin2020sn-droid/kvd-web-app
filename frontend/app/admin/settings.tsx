@@ -9,18 +9,46 @@ import {
   TextInput,
   Image,
   Alert,
+  Linking,
+  ActivityIndicator,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { api, AppSettings } from "../../src/lib/api";
 import { colors, presetBackgrounds } from "../../src/lib/theme";
+import { APP_VERSION } from "../../src/lib/version";
+
+interface UpdateInfo {
+  latest_version: string;
+  download_url: string;
+  changelog?: string;
+  mandatory?: boolean;
+}
+
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
+}
 
 export default function Settings() {
   const router = useRouter();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<
+    "idle" | "checked-latest" | "available"
+  >("idle");
 
   const load = async () => {
     const s = await api<AppSettings>("/settings");
@@ -80,6 +108,48 @@ export default function Settings() {
     await update({ password: p } as any);
     setNewPassword("");
     Alert.alert("Gespeichert", "Passwort wurde geändert.");
+  };
+
+  const checkForUpdates = async () => {
+    setChecking(true);
+    try {
+      const info = await api<UpdateInfo>("/update-info");
+      setUpdateInfo(info);
+      const cmp = compareVersions(info.latest_version, APP_VERSION);
+      if (cmp > 0) {
+        setUpdateStatus("available");
+      } else {
+        setUpdateStatus("checked-latest");
+      }
+    } catch (e: any) {
+      Alert.alert("Fehler", "Update-Prüfung fehlgeschlagen");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const downloadUpdate = async () => {
+    if (!updateInfo?.download_url) {
+      Alert.alert("Keine URL", "Download-Link wurde noch nicht konfiguriert.");
+      return;
+    }
+    Alert.alert(
+      "Update herunterladen",
+      "Ihre Daten (Aufgaben, Archiv, Listen, Einstellungen) bleiben erhalten. Download starten?",
+      [
+        { text: "Abbrechen", style: "cancel" },
+        {
+          text: "Download",
+          onPress: async () => {
+            try {
+              await Linking.openURL(updateInfo.download_url);
+            } catch {
+              Alert.alert("Fehler", "Link kann nicht geöffnet werden");
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (!settings) return null;
@@ -187,6 +257,80 @@ export default function Settings() {
           >
             <Text style={styles.btnPrimaryText}>SPEICHERN</Text>
           </TouchableOpacity>
+        </View>
+
+        {/* Update Section */}
+        <View>
+          <Text style={styles.sectionTitle}>APP-UPDATE</Text>
+          <View style={styles.versionRow}>
+            <View>
+              <Text style={styles.versionLabel}>Aktuelle Version</Text>
+              <Text style={styles.versionValue} testID="current-version">
+                v{APP_VERSION}
+              </Text>
+            </View>
+            {updateInfo && (
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={styles.versionLabel}>Neueste Version</Text>
+                <Text
+                  style={[
+                    styles.versionValue,
+                    updateStatus === "available" && { color: colors.yellow },
+                  ]}
+                  testID="latest-version"
+                >
+                  v{updateInfo.latest_version}
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {updateStatus === "checked-latest" && (
+            <View style={styles.statusInfo}>
+              <Ionicons name="checkmark-circle" size={16} color={colors.green} />
+              <Text style={styles.statusInfoText}>
+                Sie haben die neueste Version
+              </Text>
+            </View>
+          )}
+
+          {updateStatus === "available" && !!updateInfo?.changelog && (
+            <View style={styles.changelogBox}>
+              <Text style={styles.changelogLabel}>Änderungen:</Text>
+              <Text style={styles.changelogText}>{updateInfo.changelog}</Text>
+            </View>
+          )}
+
+          <TouchableOpacity
+            style={[styles.btn, checking && { opacity: 0.6 }]}
+            onPress={checkForUpdates}
+            disabled={checking}
+            testID="check-updates-btn"
+          >
+            {checking ? (
+              <ActivityIndicator color={colors.textDark} />
+            ) : (
+              <>
+                <Ionicons name="cloud-download-outline" size={16} color={colors.textDark} />
+                <Text style={styles.btnText}>Nach Updates suchen</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          {updateStatus === "available" && (
+            <TouchableOpacity
+              style={[styles.btnPrimary, { marginTop: 10 }]}
+              onPress={downloadUpdate}
+              testID="download-update-btn"
+            >
+              <Text style={styles.btnPrimaryText}>UPDATE HERUNTERLADEN</Text>
+            </TouchableOpacity>
+          )}
+
+          <Text style={styles.dataHint}>
+            Hinweis: Ihre Daten (Aufgaben, Archiv, Listen, Einstellungen) bleiben bei
+            Updates immer erhalten — sie werden auf dem Server gespeichert.
+          </Text>
         </View>
       </ScrollView>
     </SafeAreaView>

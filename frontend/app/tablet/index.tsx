@@ -19,30 +19,22 @@ import { api, Task, SimpleItem, AppSettings, TaskStatus } from "../../src/lib/ap
 import { useWebSocket } from "../../src/lib/useWebSocket";
 import { colors, presetBackgrounds, isDarkBg } from "../../src/lib/theme";
 
-const STATUS_BG: Record<string, string> = {
-  pending: "transparent",
+const STATUS_LABEL: Record<string, string> = {
+  pending: "Offen",
+  accepted: "Angenommen",
+  finished: "Erledigt",
+  cannot_accept: "Nicht annehmbar",
+  not_finished: "Nicht beendbar",
+  not_done: "Nicht erledigt",
+};
+
+const STATUS_DOT: Record<string, string> = {
+  pending: "#9CA3AF",
   accepted: colors.yellow,
   finished: colors.green,
   cannot_accept: colors.orange,
   not_finished: colors.orange,
   not_done: colors.red,
-};
-
-const STATUS_TEXT_DARK: Record<string, string> = {
-  accepted: "#0A0A0A",
-  finished: "#0A0A0A",
-  cannot_accept: "#0A0A0A",
-  not_finished: "#0A0A0A",
-  not_done: "#FFFFFF",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: "OFFEN",
-  accepted: "ANGENOMMEN",
-  finished: "BEENDET",
-  cannot_accept: "NICHT ANNEHMBAR",
-  not_finished: "NICHT BEENDET",
-  not_done: "NICHT ERLEDIGT",
 };
 
 export default function TabletView() {
@@ -53,7 +45,6 @@ export default function TabletView() {
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
 
-  // Reason modal
   const [reasonModal, setReasonModal] = useState<{
     taskId: string;
     status: TaskStatus;
@@ -71,7 +62,7 @@ export default function TabletView() {
       setTasks(t);
       setPersons(p);
       setSettings(s);
-    } catch (e) {
+    } catch {
       // ignore
     } finally {
       setLoading(false);
@@ -94,7 +85,8 @@ export default function TabletView() {
     }
   });
 
-  const personName = (id: string) => persons.find((p) => p.id === id)?.name || "—";
+  const personName = (id: string) =>
+    persons.find((p) => p.id === id)?.name || "—";
 
   const updateStatus = async (taskId: string, status: TaskStatus, reason?: string) => {
     try {
@@ -103,17 +95,13 @@ export default function TabletView() {
         body: { status, reason },
       });
       await load();
-    } catch (e) {
+    } catch {
       // ignore
     }
   };
 
   const handleAction = (task: Task, status: TaskStatus, label: string) => {
-    if (
-      status === "cannot_accept" ||
-      status === "not_finished" ||
-      status === "not_done"
-    ) {
+    if (status === "cannot_accept" || status === "not_finished" || status === "not_done") {
       setReasonModal({ taskId: task.id, status, title: label });
       setReasonText("");
     } else {
@@ -127,7 +115,6 @@ export default function TabletView() {
     setReasonModal(null);
   };
 
-  // Background config
   const bgType = settings?.background_type || "preset";
   const bgValue = settings?.background_value || "dark";
   const bgColor =
@@ -138,10 +125,14 @@ export default function TabletView() {
       : colors.bgDark;
   const bgImage = bgType === "image" ? bgValue : null;
   const dark = isDarkBg(bgColor);
-  const surface = dark ? "rgba(20,20,20,0.85)" : "rgba(255,255,255,0.9)";
+
+  // Glass surface config
+  const cardBg = dark ? "rgba(20,20,22,0.55)" : "rgba(255,255,255,0.55)";
+  const cardBorder = dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)";
   const textColor = dark ? "#FFFFFF" : "#0A0A0A";
-  const textMuted = dark ? "#A1A1AA" : "#52525B";
-  const border = dark ? "#2A2A2A" : "#E5E7EB";
+  const textMuted = dark ? "rgba(255,255,255,0.65)" : "rgba(10,10,10,0.6)";
+  const btnBg = dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.05)";
+  const btnBorder = dark ? "rgba(255,255,255,0.18)" : "rgba(0,0,0,0.12)";
 
   const dateStr = now.toLocaleDateString("de-DE", {
     weekday: "long",
@@ -149,12 +140,20 @@ export default function TabletView() {
     month: "long",
     year: "numeric",
   });
-  const timeStr = now.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  const timeStr = now.toLocaleTimeString("de-DE", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
   const Content = (
     <View style={styles.container} testID="tablet-screen">
       {/* Header */}
-      <View style={[styles.header, { borderBottomColor: border }]}>
+      <View
+        style={[
+          styles.header,
+          { backgroundColor: cardBg, borderColor: cardBorder },
+        ]}
+      >
         <View style={styles.headerLeft}>
           {settings?.logo_base64 ? (
             <Image
@@ -168,7 +167,9 @@ export default function TabletView() {
             </View>
           )}
           <View>
-            <Text style={[styles.headerTitle, { color: textColor }]}>REINIGUNG HEUTE</Text>
+            <Text style={[styles.headerTitle, { color: textColor }]}>
+              REINIGUNG HEUTE
+            </Text>
             <Text style={[styles.headerSub, { color: textMuted }]}>{dateStr}</Text>
           </View>
         </View>
@@ -189,9 +190,14 @@ export default function TabletView() {
           <ActivityIndicator color={textColor} size="large" />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
+        <ScrollView contentContainerStyle={{ padding: 16, gap: 14, paddingBottom: 40 }}>
           {tasks.length === 0 && (
-            <View style={[styles.emptyBox, { borderColor: border }]}>
+            <View
+              style={[
+                styles.emptyBox,
+                { backgroundColor: cardBg, borderColor: cardBorder },
+              ]}
+            >
               <Ionicons name="checkmark-done-outline" size={64} color={textMuted} />
               <Text style={[styles.emptyTitle, { color: textColor }]}>
                 Keine Aufgaben heute
@@ -201,101 +207,140 @@ export default function TabletView() {
               </Text>
             </View>
           )}
+
           {tasks.map((task) => {
-            const sBg = STATUS_BG[task.status];
-            const isColored = task.status !== "pending";
-            const cardBg = isColored ? sBg : surface;
-            const cardText = isColored ? STATUS_TEXT_DARK[task.status] : textColor;
-            const cardMuted = isColored ? cardText : textMuted;
+            const dotColor = STATUS_DOT[task.status];
+            const statusLabel = STATUS_LABEL[task.status];
 
             return (
               <View
                 key={task.id}
-                style={[styles.card, { backgroundColor: cardBg, borderColor: border }]}
+                style={[
+                  styles.card,
+                  { backgroundColor: cardBg, borderColor: cardBorder },
+                ]}
                 testID={`tablet-task-${task.id}`}
               >
-                <View style={styles.cardLeft}>
-                  <Text style={[styles.timeText, { color: cardText }]}>
-                    {task.time_from}
-                  </Text>
-                  <Text style={[styles.timeDash, { color: cardMuted }]}>—</Text>
-                  <Text style={[styles.timeText, { color: cardText }]}>
-                    {task.time_to}
-                  </Text>
+                {/* Top row: time + title + status dot */}
+                <View style={styles.cardTopRow}>
+                  <View style={styles.timeBox}>
+                    <Text style={[styles.timeText, { color: textColor }]}>
+                      {task.time_from}
+                    </Text>
+                    <Text style={[styles.timeDash, { color: textMuted }]}>—</Text>
+                    <Text style={[styles.timeText, { color: textColor }]}>
+                      {task.time_to}
+                    </Text>
+                  </View>
+
+                  <View style={styles.titleBox}>
+                    <Text style={[styles.taskType, { color: textColor }]}>
+                      {task.task_type}
+                    </Text>
+                    <Text style={[styles.taskMeta, { color: textMuted }]}>
+                      HAUS {task.haus} · STATION {task.station}
+                    </Text>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.statusPill,
+                      { borderColor: dotColor + "55", backgroundColor: dotColor + "15" },
+                    ]}
+                  >
+                    <View style={[styles.statusDot, { backgroundColor: dotColor }]} />
+                    <Text style={[styles.statusText, { color: textColor }]}>
+                      {statusLabel}
+                    </Text>
+                  </View>
                 </View>
 
-                <View style={[styles.cardCenter, { borderLeftColor: cardMuted + "55" }]}>
-                  <Text style={[styles.taskType, { color: cardText }]}>
-                    {task.task_type}
+                {/* Description + persons */}
+                {!!task.description && (
+                  <Text style={[styles.taskDesc, { color: textColor }]}>
+                    {task.description}
                   </Text>
-                  <Text style={[styles.taskMeta, { color: cardMuted }]}>
-                    HAUS {task.haus} · STATION {task.station}
-                  </Text>
-                  {!!task.description && (
-                    <Text style={[styles.taskDesc, { color: cardText }]}>
-                      {task.description}
-                    </Text>
-                  )}
-                  <Text style={[styles.taskPersons, { color: cardMuted }]}>
-                    {task.person_ids.map(personName).join(", ") || "—"}
-                  </Text>
-                  {!!task.accept_reason && (
-                    <Text style={[styles.reason, { color: cardText }]}>
-                      ↳ {task.accept_reason}
-                    </Text>
-                  )}
-                  {!!task.not_finished_reason && (
-                    <Text style={[styles.reason, { color: cardText }]}>
-                      ↳ {task.not_finished_reason}
-                    </Text>
-                  )}
-                  {!!task.not_done_reason && (
-                    <Text style={[styles.reason, { color: cardText }]}>
-                      ↳ {task.not_done_reason}
-                    </Text>
-                  )}
-                  {isColored && (
-                    <Text style={[styles.statusLabel, { color: cardText }]}>
-                      {STATUS_LABEL[task.status]}
-                    </Text>
-                  )}
-                </View>
+                )}
+                <Text style={[styles.taskPersons, { color: textMuted }]}>
+                  {task.person_ids.map(personName).join(" · ") || "—"}
+                </Text>
 
-                <View style={styles.cardRight}>
-                  <ActionButton
-                    label="ANNEHMEN"
-                    color={colors.yellow}
-                    textColor="#0A0A0A"
+                {/* Reasons */}
+                {!!task.accept_reason && (
+                  <View style={[styles.reasonBox, { borderColor: btnBorder }]}>
+                    <Text style={[styles.reasonLabel, { color: textMuted }]}>
+                      Nicht annehmbar
+                    </Text>
+                    <Text style={[styles.reasonText, { color: textColor }]}>
+                      {task.accept_reason}
+                    </Text>
+                  </View>
+                )}
+                {!!task.not_finished_reason && (
+                  <View style={[styles.reasonBox, { borderColor: btnBorder }]}>
+                    <Text style={[styles.reasonLabel, { color: textMuted }]}>
+                      Nicht beendbar
+                    </Text>
+                    <Text style={[styles.reasonText, { color: textColor }]}>
+                      {task.not_finished_reason}
+                    </Text>
+                  </View>
+                )}
+                {!!task.not_done_reason && (
+                  <View style={[styles.reasonBox, { borderColor: btnBorder }]}>
+                    <Text style={[styles.reasonLabel, { color: textMuted }]}>
+                      Nicht erledigt
+                    </Text>
+                    <Text style={[styles.reasonText, { color: textColor }]}>
+                      {task.not_done_reason}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Glass buttons row */}
+                <View style={styles.btnRow}>
+                  <GlassBtn
+                    label="Annehmen"
+                    dotColor={colors.yellow}
+                    bg={btnBg}
+                    border={btnBorder}
+                    textColor={textColor}
                     onPress={() => handleAction(task, "accepted", "Annehmen")}
                     testID={`btn-accept-${task.id}`}
                   />
-                  <ActionButton
-                    label="NICHT ANNEHMBAR"
-                    color="transparent"
-                    textColor={cardText}
-                    border
-                    onPress={() => handleAction(task, "cannot_accept", "Nicht annehmbar")}
-                    testID={`btn-cannot-${task.id}`}
-                  />
-                  <ActionButton
-                    label="NICHT BEENDET"
-                    color="transparent"
-                    textColor={cardText}
-                    border
-                    onPress={() => handleAction(task, "not_finished", "Nicht beendet")}
-                    testID={`btn-notfinished-${task.id}`}
-                  />
-                  <ActionButton
-                    label="BEENDEN"
-                    color={colors.green}
-                    textColor="#0A0A0A"
+                  <GlassBtn
+                    label="Beenden"
+                    dotColor={colors.green}
+                    bg={btnBg}
+                    border={btnBorder}
+                    textColor={textColor}
                     onPress={() => handleAction(task, "finished", "Beenden")}
                     testID={`btn-finish-${task.id}`}
                   />
-                  <ActionButton
-                    label="NICHT ERLEDIGT"
-                    color={colors.red}
-                    textColor="#FFFFFF"
+                  <GlassBtn
+                    label="Nicht annehmbar"
+                    dotColor={colors.orange}
+                    bg={btnBg}
+                    border={btnBorder}
+                    textColor={textColor}
+                    onPress={() => handleAction(task, "cannot_accept", "Nicht annehmbar")}
+                    testID={`btn-cannot-${task.id}`}
+                  />
+                  <GlassBtn
+                    label="Nicht beendbar"
+                    dotColor={colors.orange}
+                    bg={btnBg}
+                    border={btnBorder}
+                    textColor={textColor}
+                    onPress={() => handleAction(task, "not_finished", "Nicht beendbar")}
+                    testID={`btn-notfinished-${task.id}`}
+                  />
+                  <GlassBtn
+                    label="Nicht erledigt"
+                    dotColor={colors.red}
+                    bg={btnBg}
+                    border={btnBorder}
+                    textColor={textColor}
                     onPress={() => handleAction(task, "not_done", "Nicht erledigt")}
                     testID={`btn-notdone-${task.id}`}
                   />
@@ -325,7 +370,7 @@ export default function TabletView() {
               value={reasonText}
               onChangeText={setReasonText}
               placeholder="Grund..."
-              placeholderTextColor="#A1A1AA"
+              placeholderTextColor="rgba(255,255,255,0.4)"
               multiline
               numberOfLines={3}
               style={styles.modalInput}
@@ -337,14 +382,14 @@ export default function TabletView() {
                 style={styles.modalCancel}
                 testID="reason-cancel-btn"
               >
-                <Text style={styles.modalCancelText}>ABBRECHEN</Text>
+                <Text style={styles.modalCancelText}>Abbrechen</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={submitReason}
                 style={styles.modalConfirm}
                 testID="reason-submit-btn"
               >
-                <Text style={styles.modalConfirmText}>BESTÄTIGEN</Text>
+                <Text style={styles.modalConfirmText}>Bestätigen</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -356,7 +401,11 @@ export default function TabletView() {
   return (
     <View style={[styles.root, { backgroundColor: bgColor }]}>
       {bgImage ? (
-        <ImageBackground source={{ uri: bgImage }} style={{ flex: 1 }} resizeMode="cover">
+        <ImageBackground
+          source={{ uri: bgImage }}
+          style={{ flex: 1 }}
+          resizeMode="cover"
+        >
           {Content}
         </ImageBackground>
       ) : (
@@ -366,36 +415,32 @@ export default function TabletView() {
   );
 }
 
-function ActionButton({
+function GlassBtn({
   label,
-  color,
+  dotColor,
+  bg,
+  border,
   textColor,
   onPress,
   testID,
-  border,
 }: {
   label: string;
-  color: string;
+  dotColor: string;
+  bg: string;
+  border: string;
   textColor: string;
   onPress: () => void;
   testID?: string;
-  border?: boolean;
 }) {
   return (
     <TouchableOpacity
       onPress={onPress}
-      style={[
-        styles.actionBtn,
-        {
-          backgroundColor: color,
-          borderColor: border ? textColor + "55" : color,
-          borderWidth: border ? 2 : 0,
-        },
-      ]}
+      style={[styles.glassBtn, { backgroundColor: bg, borderColor: border }]}
       testID={testID}
-      activeOpacity={0.7}
+      activeOpacity={0.6}
     >
-      <Text style={[styles.actionText, { color: textColor }]} numberOfLines={2}>
+      <View style={[styles.glassDot, { backgroundColor: dotColor }]} />
+      <Text style={[styles.glassBtnText, { color: textColor }]} numberOfLines={1}>
         {label}
       </Text>
     </TouchableOpacity>
@@ -406,122 +451,194 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   container: { flex: 1 },
   header: {
+    margin: 16,
+    marginBottom: 4,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 20,
+    borderWidth: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 24,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
   },
-  headerLeft: { flexDirection: "row", alignItems: "center", gap: 16 },
-  logo: { width: 56, height: 56 },
+  headerLeft: { flexDirection: "row", alignItems: "center", gap: 14 },
+  logo: { width: 48, height: 48 },
   logoFallback: {
-    width: 56,
-    height: 56,
-    borderWidth: 2,
+    width: 48,
+    height: 48,
+    borderWidth: 1.5,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
-  logoFallbackText: { fontSize: 28, fontWeight: "900" },
-  headerTitle: { fontSize: 24, fontWeight: "900", letterSpacing: 3 },
-  headerSub: { fontSize: 13, letterSpacing: 1, marginTop: 2 },
-  headerRight: { flexDirection: "row", alignItems: "center", gap: 16 },
-  clock: { fontSize: 36, fontWeight: "900", letterSpacing: 2 },
-  exitBtn: { padding: 8 },
+  logoFallbackText: { fontSize: 22, fontWeight: "900" },
+  headerTitle: { fontSize: 20, fontWeight: "900", letterSpacing: 2 },
+  headerSub: { fontSize: 12, letterSpacing: 1, marginTop: 2 },
+  headerRight: { flexDirection: "row", alignItems: "center", gap: 12 },
+  clock: { fontSize: 28, fontWeight: "800", letterSpacing: 1 },
+  exitBtn: { padding: 6 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   emptyBox: {
     alignItems: "center",
     padding: 60,
-    borderWidth: 2,
-    borderStyle: "dashed",
+    borderWidth: 1,
+    borderRadius: 20,
     gap: 12,
   },
-  emptyTitle: { fontSize: 22, fontWeight: "800", letterSpacing: 2 },
-  emptySub: { fontSize: 14, letterSpacing: 1 },
+  emptyTitle: { fontSize: 20, fontWeight: "800", letterSpacing: 1.5 },
+  emptySub: { fontSize: 14, letterSpacing: 0.5 },
   card: {
-    flexDirection: "row",
     borderWidth: 1,
-    minHeight: 140,
+    borderRadius: 20,
+    padding: 18,
+    gap: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+    overflow: "hidden",
   },
-  cardLeft: {
-    width: 130,
+  cardTopRow: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 12,
+    gap: 12,
+    flexWrap: "wrap",
   },
-  timeText: { fontSize: 28, fontWeight: "900", letterSpacing: 1 },
-  timeDash: { fontSize: 18, marginVertical: 2 },
-  cardCenter: {
-    flex: 1,
-    padding: 16,
-    borderLeftWidth: 1,
-    gap: 4,
-    justifyContent: "center",
-  },
-  taskType: { fontSize: 22, fontWeight: "900", letterSpacing: 1 },
-  taskMeta: { fontSize: 12, letterSpacing: 2, fontWeight: "700" },
-  taskDesc: { fontSize: 15, marginTop: 4 },
-  taskPersons: { fontSize: 14, fontStyle: "italic", marginTop: 4 },
-  reason: { fontSize: 13, fontStyle: "italic", marginTop: 2 },
-  statusLabel: { fontSize: 11, fontWeight: "900", letterSpacing: 3, marginTop: 6 },
-  cardRight: { flexDirection: "column", width: 160 },
-  actionBtn: {
-    flex: 1,
-    minHeight: 44,
-    paddingHorizontal: 8,
+  timeBox: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.06)",
   },
-  actionText: {
+  timeText: { fontSize: 15, fontWeight: "800", letterSpacing: 0.5 },
+  timeDash: { fontSize: 13 },
+  titleBox: { flex: 1, minWidth: 120 },
+  taskType: { fontSize: 18, fontWeight: "800", letterSpacing: 0.5 },
+  taskMeta: {
     fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 1,
-    textAlign: "center",
+    letterSpacing: 2,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  statusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+  taskDesc: { fontSize: 14, lineHeight: 20 },
+  taskPersons: { fontSize: 13, fontStyle: "italic" },
+  reasonBox: {
+    borderLeftWidth: 2,
+    paddingLeft: 10,
+    paddingVertical: 2,
+    gap: 2,
+  },
+  reasonLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 1.5,
+    textTransform: "uppercase",
+  },
+  reasonText: { fontSize: 13, fontStyle: "italic" },
+  btnRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+  },
+  glassBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    minHeight: 38,
+  },
+  glassDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  glassBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
+    letterSpacing: 0.3,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.8)",
+    backgroundColor: "rgba(0,0,0,0.75)",
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
   },
   modalCard: {
     width: "100%",
-    maxWidth: 600,
-    backgroundColor: "#1A1A1A",
+    maxWidth: 520,
+    backgroundColor: "rgba(24,24,28,0.95)",
     borderWidth: 1,
-    borderColor: "#2A2A2A",
-    padding: 24,
+    borderColor: "rgba(255,255,255,0.12)",
+    borderRadius: 20,
+    padding: 22,
     gap: 14,
   },
-  modalTitle: { color: "#FFFFFF", fontSize: 22, fontWeight: "900", letterSpacing: 2 },
-  modalSub: { color: "#A1A1AA", fontSize: 14 },
+  modalTitle: { color: "#FFFFFF", fontSize: 20, fontWeight: "800", letterSpacing: 0.5 },
+  modalSub: { color: "rgba(255,255,255,0.6)", fontSize: 13 },
   modalInput: {
-    backgroundColor: "#0F0F0F",
+    backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
-    borderColor: "#2A2A2A",
+    borderColor: "rgba(255,255,255,0.12)",
     color: "#FFFFFF",
     padding: 14,
-    fontSize: 16,
+    fontSize: 15,
     height: 100,
     textAlignVertical: "top",
+    borderRadius: 14,
   },
-  modalRow: { flexDirection: "row", gap: 12, marginTop: 4 },
+  modalRow: { flexDirection: "row", gap: 10, marginTop: 4 },
   modalCancel: {
     flex: 1,
-    height: 56,
-    borderWidth: 2,
-    borderColor: "#2A2A2A",
+    height: 50,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.04)",
   },
-  modalCancelText: { color: "#FFFFFF", fontWeight: "900", letterSpacing: 2 },
+  modalCancelText: { color: "#FFFFFF", fontWeight: "700", letterSpacing: 0.5 },
   modalConfirm: {
     flex: 1,
-    height: 56,
-    backgroundColor: colors.yellow,
+    height: 50,
+    backgroundColor: "rgba(255,214,0,0.9)",
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: 14,
   },
-  modalConfirmText: { color: "#0A0A0A", fontWeight: "900", letterSpacing: 2 },
+  modalConfirmText: { color: "#0A0A0A", fontWeight: "900", letterSpacing: 0.5 },
 });
