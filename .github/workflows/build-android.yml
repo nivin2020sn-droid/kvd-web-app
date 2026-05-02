@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build Debug APK
+    name: Build Standalone APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -48,14 +48,9 @@ jobs:
         id: detect
         shell: bash
         run: |
-          if [ -f "frontend/package.json" ]; then
-            DIR="frontend"
-          elif [ -f "package.json" ]; then
-            DIR="."
-          else
-            echo "::error::package.json not found"
-            exit 1
-          fi
+          if [ -f "frontend/package.json" ]; then DIR="frontend"; \
+          elif [ -f "package.json" ]; then DIR="."; \
+          else echo "::error::package.json not found"; exit 1; fi
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Frontend directory: $DIR"
 
@@ -99,11 +94,15 @@ jobs:
       - name: Disk check before gradle
         run: df -h /
 
-      - name: Build Debug APK
+      - name: Build Release APK (standalone, debug-signed)
         working-directory: ${{ steps.detect.outputs.dir }}/android
         env:
           GRADLE_OPTS: "-Xmx3g -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g"
-        run: ./gradlew assembleDebug --no-daemon --console=plain
+        run: |
+          ./gradlew assembleRelease --no-daemon --console=plain \
+            -PenableProguardInReleaseBuilds=false \
+            -PenableShrinkResourcesInReleaseBuilds=false \
+            -Pandroid.enableR8.fullMode=false
 
       - name: Disk check after gradle
         if: always()
@@ -120,13 +119,15 @@ jobs:
 
       - name: List built APK
         working-directory: ${{ steps.detect.outputs.dir }}
-        run: ls -la android/app/build/outputs/apk/debug/ || true
+        run: |
+          ls -la android/app/build/outputs/apk/release/ || true
+          du -h android/app/build/outputs/apk/release/*.apk 2>/dev/null || true
 
-      - name: Upload Debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: cleaning-app-debug-${{ github.sha }}
-          path: ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/debug/*.apk
+          name: cleaning-app-${{ github.sha }}
+          path: ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -136,13 +137,15 @@ jobs:
         run: |
           echo "### Build Ergebnis :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -n "$(find ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/debug -name '*.apk' 2>/dev/null)" ]; then
-            echo "✅ **Debug APK erfolgreich gebaut**" >> $GITHUB_STEP_SUMMARY
+          APK_PATH=$(find ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/release -name '*.apk' 2>/dev/null | head -1)
+          if [ -n "$APK_PATH" ]; then
+            APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
+            echo "✅ **Standalone APK erfolgreich gebaut**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Artifact: \`cleaning-app-debug-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Artifact: \`cleaning-app-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Größe: **$APK_SIZE**" >> $GITHUB_STEP_SUMMARY
+            echo "- Mit Debug-Keystore signiert (kein Metro nötig)" >> $GITHUB_STEP_SUMMARY
+            echo "- JS-Bundle in der APK enthalten — funktioniert offline" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **Debug APK Build fehlgeschlagen**" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Build fehlgeschlagen**" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> Release APK ist vorübergehend deaktiviert (Platzsparen)." >> $GITHUB_STEP_SUMMARY
-          echo "> Debug APK ist vollständig funktionsfähig für interne Verteilung." >> $GITHUB_STEP_SUMMARY
