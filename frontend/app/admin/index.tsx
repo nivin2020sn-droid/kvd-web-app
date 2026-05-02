@@ -14,6 +14,7 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api, setToken, Task, SimpleItem } from "../../src/lib/api";
 import { useWebSocket } from "../../src/lib/useWebSocket";
+import { subscribeServerConfig, getServerConfigSync } from "../../src/lib/serverConfig";
 import { colors } from "../../src/lib/theme";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -40,6 +41,14 @@ export default function AdminHome() {
   const [persons, setPersons] = useState<SimpleItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [online, setOnline] = useState(!!getServerConfigSync());
+
+  useEffect(() => {
+    const unsub = subscribeServerConfig((cfg) => setOnline(!!cfg));
+    return () => {
+      unsub();
+    };
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -126,6 +135,31 @@ export default function AdminHome() {
         </View>
         <TouchableOpacity onPress={handleLogout} testID="admin-logout-btn" style={styles.iconBtn}>
           <Ionicons name="log-out-outline" size={22} color={colors.textDark} />
+        </TouchableOpacity>
+      </View>
+
+      <View
+        style={[
+          styles.onlineBanner,
+          { borderColor: online ? colors.green : colors.orange },
+        ]}
+        testID="admin-online-banner"
+      >
+        <View
+          style={[
+            styles.onlineDot,
+            { backgroundColor: online ? colors.green : colors.orange },
+          ]}
+        />
+        <Text style={styles.onlineText}>
+          {online ? "Online · Server verbunden" : "Offline-Modus · Lokale Daten"}
+        </Text>
+        <TouchableOpacity
+          onPress={() => router.push("/admin/server")}
+          style={styles.onlineBtn}
+          testID="admin-server-link-btn"
+        >
+          <Text style={styles.onlineBtnText}>Server</Text>
         </TouchableOpacity>
       </View>
 
@@ -297,6 +331,28 @@ const styles = StyleSheet.create({
   brand: { color: colors.textDark, fontSize: 24, fontWeight: "900", letterSpacing: 2 },
   brandSub: { color: colors.textMutedDark, fontSize: 12, letterSpacing: 1, marginTop: 2 },
   iconBtn: { padding: 8 },
+  onlineBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: colors.surfaceDark,
+  },
+  onlineDot: { width: 8, height: 8, borderRadius: 4 },
+  onlineText: { color: colors.textDark, fontSize: 12, fontWeight: "700", flex: 1 },
+  onlineBtn: {
+    borderWidth: 1,
+    borderColor: colors.borderDark,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  onlineBtnText: { color: colors.textDark, fontSize: 11, fontWeight: "700", letterSpacing: 1 },
   toolbar: {
     flexDirection: "row",
     paddingHorizontal: 12,

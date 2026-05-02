@@ -1,8 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL || "";
-
-export const API_BASE = `${BASE}/api`;
+import { loadServerConfig, getServerConfigSync, isOnlineMode } from "./serverConfig";
+import { localHandler } from "./localStore";
 
 export async function getToken(): Promise<string | null> {
   return AsyncStorage.getItem("admin_token");
@@ -18,33 +16,56 @@ async function authHeaders(): Promise<Record<string, string>> {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-export async function api<T = any>(
-  path: string,
-  options: { method?: string; body?: any; auth?: boolean } = {}
-): Promise<T> {
-  const { method = "GET", body, auth = false } = options;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (auth) Object.assign(headers, await authHeaders());
-
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `HTTP ${res.status}`);
-  }
-  if (res.status === 204) return undefined as T;
-  return res.json();
+interface ApiOptions {
+  method?: string;
+  body?: any;
+  auth?: boolean;
+  timeoutMs?: number;
 }
 
-// WebSocket URL (replace http(s) with ws(s))
-export function getWsUrl(): string {
-  const url = `${BASE}/api/ws`;
-  return url.replace(/^http/, "ws");
+export async function api<T = any>(path: string, options: ApiOptions = {}): Promise<T> {
+  const { method = "GET", body, auth = false, timeoutMs = 5000 } = options;
+
+  // Make sure we loaded config once
+  await loadServerConfig();
+  const cfg = getServerConfigSync();
+
+  // ---------- Offline branch ----------
+  if (!cfg) {
+    return (await localHandler<T>(path, method, body)) as T;
+  }
+
+  // ---------- Online branch ----------
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (cfg.apiKey) headers["X-API-Key"] = cfg.apiKey;
+    if (auth) Object.assign(headers, await authHeaders());
+
+    const res = await fetch(`${cfg.apiBaseUrl}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      const err: any = new Error(text || `HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function getWsUrl(): string | null {
+  const cfg = getServerConfigSync();
+  return cfg ? cfg.wsUrl : null;
 }
 
 // ---------- Types ----------
@@ -87,3 +108,5 @@ export interface AppSettings {
   background_type: "preset" | "color" | "image";
   background_value: string;
 }
+
+export { isOnlineMode };

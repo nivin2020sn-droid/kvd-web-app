@@ -17,6 +17,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api, Task, SimpleItem, AppSettings, TaskStatus } from "../../src/lib/api";
 import { useWebSocket } from "../../src/lib/useWebSocket";
+import { subscribeServerConfig, getServerConfigSync } from "../../src/lib/serverConfig";
 import { colors, presetBackgrounds, isDarkBg } from "../../src/lib/theme";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -51,6 +52,14 @@ export default function TabletView() {
     title: string;
   } | null>(null);
   const [reasonText, setReasonText] = useState("");
+  const [online, setOnline] = useState(!!getServerConfigSync());
+
+  useEffect(() => {
+    const unsub = subscribeServerConfig((cfg) => setOnline(!!cfg));
+    return () => {
+      unsub();
+    };
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -171,10 +180,16 @@ export default function TabletView() {
           </TouchableOpacity>
         </View>
 
-        {/* Row 2: PLAN HEUTE + date + time */}
+        {/* Row 2: PLAN HEUTE + date + time + online badge */}
         <View style={styles.headerInfoRow}>
           <Text style={[styles.planHeute, { color: textColor }]}>PLAN HEUTE</Text>
           <Text style={[styles.dateText, { color: textMuted }]}>{dateStr}</Text>
+          {!online && (
+            <View style={styles.offlineBadge}>
+              <View style={styles.offlineDot} />
+              <Text style={styles.offlineBadgeText}>Offline Modus</Text>
+            </View>
+          )}
           <Text style={[styles.clockText, { color: textMuted }]}>{timeStr}</Text>
         </View>
       </View>
@@ -488,6 +503,29 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "400",
     marginLeft: "auto",
+  },
+  offlineBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.orange,
+    backgroundColor: "rgba(255,149,0,0.15)",
+  },
+  offlineDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: colors.orange,
+  },
+  offlineBadgeText: {
+    color: colors.orange,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.5,
   },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   emptyBox: {

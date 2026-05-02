@@ -1,0 +1,49 @@
+{
+  "summary": "Tested offline-first iteration-5 on mobile viewport (390x844). Found & fixed a CRITICAL red-screen blocker in app/admin/index.tsx — the component referenced an undeclared `online` variable (missing useState + subscribeServerConfig hook). After applying the minimal fix (mirroring tablet/index.tsx pattern), the full offline flow works: 3s splash cutoff holds, landing shows ADMIN+TABLET immediately, admin login with admin123 succeeds via localHandler, offline banner renders correctly, Server-Einstellungen screen opens, Server URL auto-derives API Base + WebSocket URLs, Save with URL switches to Online banner, and the online regression path reaches the real backend (seeded task-types visible). One RN-web quirk noted for Alert.alert destructive confirms that would need native-device verification.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/admin/index.tsx",
+        "issue": "CRITICAL RED SCREEN: `online` variable referenced on lines 136, 143, 147 but never declared (no useState, no subscribeServerConfig hook). Admin dashboard crashed immediately after login with `ReferenceError: online is not defined`, blocking EVERY admin flow. FIXED by T1 — added `const [online, setOnline] = useState(!!getServerConfigSync());` plus a subscribeServerConfig useEffect, matching the exact pattern already used in app/tablet/index.tsx.",
+        "testID": "admin-online-banner",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "admin/index (online banner)",
+        "issues": [
+          "Banner rendered inline text reads 'Offline-Modus · Lokale DatenServer' / 'Online · Server verbundenServer' because the <TouchableOpacity> 'Server' button sits directly next to the status text inside a flex row with no leading space — visually there is a gap but textContent concatenation has no separator. Consider wrapping the Server button in a container with a gap or adding explicit spacing/separator for accessibility readers."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "RN-web Alert.alert",
+        "issue": "On web preview, Alert.alert single-button error dialogs ('Fehler, Bitte Server-URL eingeben.') and multi-button confirmations (Zurücksetzen destructive) do not reliably surface through the browser dialog bridge during Playwright — the dialog event listener never fires. This is a known RN-web limitation, not a product bug; behaviour must be re-verified on a real iOS/Android device. UI code paths themselves look correct."
+      }
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_5.json"],
+  "action_items": [
+    "MAIN AGENT: Verify the fix I applied in app/admin/index.tsx is aligned with project conventions (I added the missing `online` state + subscribeServerConfig useEffect, mirroring tablet/index.tsx).",
+    "MAIN AGENT: Consider wrapping the 'Server' button in the admin online banner so that screen-reader / copied text gets a separator between status text and button label.",
+    "MAIN AGENT: Verify Alert.alert destructive confirmation flows (Zurücksetzen, empty-URL error, Archivieren) on a native device or via Expo Go since web preview does not reliably exercise the native dialog path.",
+    "MAIN AGENT: Add an explicit e2e test for offline → online switch persistence across reloads (I manually confirmed the banner toggles; a scripted reload-verification would harden regression coverage)."
+  ],
+  "critical_code_review_comments": [
+    "app/admin/index.tsx was missing the `online` state entirely while the same pattern exists in app/tablet/index.tsx — indicates copy-paste oversight during iteration-5. Consider extracting a shared `useOnlineMode()` hook in src/lib/serverConfig.ts to prevent this class of bug.",
+    "src/lib/api.ts: the 5s fetch timeout is sound; consider surfacing AbortError more clearly (currently re-thrown generic) so UI can distinguish timeout vs network vs HTTP failure.",
+    "src/lib/localStore.ts `initLocalStore` seed uses `existing.length === 0` as the guard — if a user manually deletes all items, the seed will re-populate on next cold start. Might be acceptable but worth flagging as design intent.",
+    "src/lib/serverConfig.ts `derive` does not validate the URL scheme — a user typing 'example.com' without http(s) will produce an invalid WS URL ('ws://example.com/api/ws' works by accident because `replace(/^http/, 'ws')` no-ops). Consider requiring http(s)://."
+  ],
+  "updated_files": ["/app/frontend/app/admin/index.tsx"],
+  "success_rate": {"backend": "n/a (frontend-only testing requested)", "frontend": "~85% (core offline + online toggle verified; Alert confirm flows unverifiable on web)"},
+  "seed_data_creation": "None. Relied on local AsyncStorage seed in initLocalStore (Grundreiniger/Glasreiniger/Baureiniger/Endbaureiniger, houses A/B/C, stations 10/11/12) and existing server-seeded data for the online regression check.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Metro caches aggressively — after code fixes you MUST run `sudo supervisorctl restart expo` AND do a `localStorage.clear()` + hard reload in the browser, otherwise stale bundles reproduce already-fixed errors. Use mobile viewport 390x844. AsyncStorage on web is backed by localStorage, so clearing it resets serverConfig and switches the app into offline mode. Known-working login: admin123 (local default inside localStore.ts). The backend at EXPO_PUBLIC_BACKEND_URL is live and seeded, so saving that URL in Server-Einstellungen enables the online path end-to-end.",
+  "rca_of_issue": "RCA of admin red-screen: During iteration-5 the online/offline banner was added to app/admin/index.tsx (lines 133-156) referencing an `online` identifier, but unlike the parallel change in app/tablet/index.tsx the corresponding `useState` + `subscribeServerConfig` useEffect was NOT added. Result: first render after login threw `ReferenceError: online is not defined` at line 136 column 26, triggering Expo Router's LogBox red screen and making the entire admin area unusable regardless of server-config state. Reproduction: open app with no server config → tap ADMIN → enter admin123 → Anmelden. Mitigation (applied): added `const [online, setOnline] = useState(!!getServerConfigSync());` and a `subscribeServerConfig` useEffect subscription right after the existing useState hooks, exactly mirroring tablet/index.tsx lines 55-62. After restarting expo and clearing localStorage, the admin dashboard renders correctly and the banner toggles between 'Offline-Modus · Lokale Daten' and 'Online · Server verbunden' as the server config changes."
+}
