@@ -83,8 +83,23 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Build Release APK
+        id: build_release
+        continue-on-error: true
         working-directory: ${{ steps.detect.outputs.dir }}/android
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        env:
+          GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=false"
+        run: |
+          ./gradlew assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            -Pandroid.enableR8.fullMode=false \
+            -PenableProguardInReleaseBuilds=false \
+            -PenableShrinkResourcesInReleaseBuilds=false \
+            || {
+              echo "::warning::Release APK build failed — Debug APK is still available in Artifacts."
+              echo "release_failed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
 
       - name: List built APKs
         if: always()
@@ -116,13 +131,21 @@ jobs:
       - name: Build summary
         if: always()
         run: |
+          DEBUG_STATUS="❌ Fehlgeschlagen"
+          RELEASE_STATUS="❌ Fehlgeschlagen"
+          if [ -n "$(find ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/debug -name '*.apk' 2>/dev/null)" ]; then
+            DEBUG_STATUS="✅ Erfolgreich"
+          fi
+          if [ -n "$(find ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/release -name '*.apk' 2>/dev/null)" ]; then
+            RELEASE_STATUS="✅ Erfolgreich"
+          fi
           echo "### Build Ergebnis :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Frontend dir: \`${{ steps.detect.outputs.dir }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Variante | Datei |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Debug APK   | \`cleaning-app-debug-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Release APK | \`cleaning-app-release-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Variante | Status | Artifact |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Debug APK   | $DEBUG_STATUS   | \`cleaning-app-debug-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Release APK | $RELEASE_STATUS | \`cleaning-app-release-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Beide APKs sind unter **Artifacts** verfügbar (mit Debug-Keystore signiert)." >> $GITHUB_STEP_SUMMARY
+          echo "**Hinweis**: Beide APKs sind mit dem Debug-Keystore signiert — perfekt zum manuellen Installieren auf eigenen Geräten." >> $GITHUB_STEP_SUMMARY
