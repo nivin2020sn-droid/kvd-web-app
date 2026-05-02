@@ -17,20 +17,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    defaults:
-      run:
-        working-directory: frontend
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Detect frontend directory
+        id: detect
+        shell: bash
+        run: |
+          if [ -f "frontend/package.json" ]; then
+            DIR="frontend"
+          elif [ -f "package.json" ]; then
+            DIR="."
+          else
+            echo "::error::Could not find package.json in repo root or frontend/"
+            ls -la
+            exit 1
+          fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Frontend directory: $DIR"
+          ls -la "$DIR"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: yarn
-          cache-dependency-path: frontend/yarn.lock
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -39,21 +50,29 @@ jobs:
           java-version: 17
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies
-        run: yarn install --frozen-lockfile
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: |
+          if [ -f "yarn.lock" ]; then
+            corepack enable || true
+            yarn install --frozen-lockfile
+          else
+            npm install
+          fi
 
       - name: Expo prebuild (generate native android project)
+        working-directory: ${{ steps.detect.outputs.dir }}
         env:
           EXPO_NO_TELEMETRY: 1
         run: npx expo prebuild --platform android --clean --no-install
 
       - name: Generate release keystore
-        working-directory: frontend/android/app
+        working-directory: ${{ steps.detect.outputs.dir }}/android/app
         run: |
           keytool -genkeypair -v \
             -keystore release.keystore \
@@ -66,7 +85,7 @@ jobs:
             -dname "CN=Cleaning App, OU=Mobile, O=Reinigung, L=Berlin, S=Berlin, C=DE"
 
       - name: Inject release signing config
-        working-directory: frontend/android
+        working-directory: ${{ steps.detect.outputs.dir }}/android
         run: |
           cat >> gradle.properties <<EOF
 
@@ -76,15 +95,12 @@ jobs:
           MYAPP_RELEASE_KEY_PASSWORD=cleaningapp
           EOF
 
-          # Patch app/build.gradle to add signingConfig for release
           python3 <<'PYEOF'
           import re, pathlib
           p = pathlib.Path("app/build.gradle")
           src = p.read_text()
-
           if "MYAPP_RELEASE_STORE_FILE" in src:
               raise SystemExit(0)
-
           signing_block = """
               release {
                   if (project.hasProperty('MYAPP_RELEASE_STORE_FILE')) {
@@ -95,50 +111,31 @@ jobs:
                   }
               }
           """
-
-          # Insert signing config inside signingConfigs { ... }
-          src = re.sub(
-              r"(signingConfigs\s*\{)",
-              r"\1" + signing_block,
-              src,
-              count=1,
-          )
-
-          # Make release buildType use signingConfigs.release
+          src = re.sub(r"(signingConfigs\s*\{)", r"\1" + signing_block, src, count=1)
           src = re.sub(
               r"(buildTypes\s*\{[^}]*?release\s*\{)([^}]*?signingConfig\s+signingConfigs\.)debug",
               r"\1\2release",
-              src,
-              count=1,
-              flags=re.DOTALL,
+              src, count=1, flags=re.DOTALL,
           )
-
           p.write_text(src)
           print("Patched app/build.gradle for release signing.")
           PYEOF
 
       - name: Make gradlew executable
-        working-directory: frontend/android
+        working-directory: ${{ steps.detect.outputs.dir }}/android
         run: chmod +x ./gradlew
 
       - name: Build Debug APK
-        working-directory: frontend/android
+        working-directory: ${{ steps.detect.outputs.dir }}/android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Build Release APK
-        working-directory: frontend/android
+        working-directory: ${{ steps.detect.outputs.dir }}/android
         run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Locate APKs
-        id: apks
-        working-directory: frontend
+      - name: List built APKs
+        working-directory: ${{ steps.detect.outputs.dir }}
         run: |
-          DEBUG_APK=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          RELEASE_APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          echo "debug_apk=$DEBUG_APK" >> "$GITHUB_OUTPUT"
-          echo "release_apk=$RELEASE_APK" >> "$GITHUB_OUTPUT"
-          echo "Debug APK: $DEBUG_APK"
-          echo "Release APK: $RELEASE_APK"
           ls -la android/app/build/outputs/apk/debug/ || true
           ls -la android/app/build/outputs/apk/release/ || true
 
@@ -146,7 +143,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cleaning-app-debug-${{ github.sha }}
-          path: frontend/android/app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -154,7 +151,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cleaning-app-release-${{ github.sha }}
-          path: frontend/android/app/build/outputs/apk/release/*.apk
+          path: ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -162,6 +159,8 @@ jobs:
         if: always()
         run: |
           echo "### Build Ergebnis :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Frontend dir: \`${{ steps.detect.outputs.dir }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Variante | Datei |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
