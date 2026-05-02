@@ -1,0 +1,113 @@
+{
+  "project_name": "CleaningTaskMaster (Admin & Display)",
+  "theme": "Light & Dark Modes (Customizable)",
+  "archetype": "Archetype 4 (Swiss & High-Contrast)",
+  "typography": {
+    "headings": {
+      "family": "Cabinet Grotesk",
+      "weights": ["700", "900"],
+      "usage": "H1-H3, massive tablet row titles, bold metric numbers",
+      "scale": {
+        "tablet_h1": "text-5xl sm:text-6xl tracking-tight",
+        "tablet_row_title": "text-3xl tracking-tight",
+        "admin_h1": "text-3xl tracking-tight"
+      }
+    },
+    "body": {
+      "family": "IBM Plex Sans",
+      "weights": ["400", "500", "600"],
+      "usage": "Labels, descriptions, reason inputs",
+      "scale": {
+        "tablet_body": "text-xl",
+        "tablet_label": "text-sm tracking-[0.2em] uppercase",
+        "admin_body": "text-base",
+        "admin_label": "text-xs tracking-wider uppercase"
+      }
+    }
+  },
+  "colors": {
+    "background_light": "#F7F7F8",
+    "background_dark": "#0F0F0F",
+    "surface_light": "#FFFFFF",
+    "surface_dark": "#1A1A1A",
+    "border_light": "#E5E7EB",
+    "border_dark": "#333333",
+    "text_primary_light": "#0A0A0A",
+    "text_secondary_light": "#52525B",
+    "text_primary_dark": "#FFFFFF",
+    "text_secondary_dark": "#A1A1AA",
+    "signal": {
+      "yellow_annehmen": "#FFD600",
+      "green_beenden": "#00E676",
+      "red_nicht_erledigt": "#FF3B30",
+      "blue_action": "#0055FF"
+    },
+    "contrast_rules": "Signal colors (Yellow, Green) must have #0A0A0A (black) text for APCA contrast compliance. Red must have #FFFFFF text."
+  },
+  "layout_spacing": {
+    "tablet_mode": {
+      "container": "w-full max-w-none p-8 lg:p-12",
+      "row_height": "min-h-[140px]",
+      "touch_targets": "min-h-[80px] min-w-[120px]",
+      "gap": "gap-6"
+    },
+    "admin_mode": {
+      "container": "w-full max-w-md mx-auto p-4 md:p-6",
+      "row_height": "auto",
+      "touch_targets": "min-h-[48px]",
+      "gap": "gap-4"
+    }
+  },
+  "ui_components": {
+    "tablet_task_row": {
+      "style": "bg-surface-light dark:bg-surface-dark border border-border-light dark:border-border-dark flex flex-row items-stretch",
+      "behavior": "Grid layout. Col 1: Time (h-full border-r). Col 2: Task Info (Haus/Station/Desc). Col 3: Actions.",
+      "typography": "Time: Cabinet Grotesk text-4xl. Info: IBM Plex text-xl.",
+      "test_id_pattern": "task-row-{id}"
+    },
+    "tablet_action_button": {
+      "style": "h-20 px-8 text-2xl font-bold uppercase tracking-wide transition-colors active:scale-95 border-l border-border-light dark:border-border-dark",
+      "states": {
+        "default": "bg-surface-light hover:bg-gray-100 text-text-primary-light",
+        "annehmen": "bg-[#FFD600] text-[#0A0A0A]",
+        "beenden": "bg-[#00E676] text-[#0A0A0A]",
+        "nicht_erledigt": "bg-[#FF3B30] text-[#FFFFFF]"
+      }
+    },
+    "admin_form_input": {
+      "style": "h-14 bg-surface-light border border-border-light rounded-none text-base px-4 focus:ring-2 focus:ring-blue-500",
+      "label": "text-xs tracking-[0.2em] uppercase text-text-secondary-light mb-2 block"
+    }
+  },
+  "media": {
+    "image_urls": {
+      "tablet_background_light": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/12cc5130-6af2-4b0f-a2be-df79cf9c7f25/images/439a1e305f3e3fb9a2021205ede22bd8f62f78d173f2779863790b0c3fa480e6.png",
+        "description": "Minimalist frosted glass abstract background for light theme tablet UI. High end clean aesthetic.",
+        "category": "backgrounds"
+      },
+      "tablet_background_dark": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/12cc5130-6af2-4b0f-a2be-df79cf9c7f25/images/0dae8599a6c6faf040533735baf8382c44a01fba3d33688d4691a2729c773974.png",
+        "description": "Dark industrial abstract background, brushed steel and matte panels for dark theme tablet UI.",
+        "category": "backgrounds"
+      }
+    }
+  },
+  "motion_interactions": {
+    "buttons": "transition-transform active:scale-95 active:opacity-80 duration-100",
+    "modals": "entry: slide-up with fade (Framer Motion: y: [50, 0], opacity: [0, 1], duration: 0.3, ease: 'easeOut')",
+    "task_rows": "entry: stagger children (Framer Motion: delayChildren: 0.1, staggerChildren: 0.05)"
+  },
+  "accessibility": {
+    "contrast": "Ensure text over Signal Yellow (#FFD600) and Signal Green (#00E676) is #0A0A0A. Text over Red (#FF3B30) must be #FFFFFF.",
+    "touch_targets": "Tablet mode requires minimum 80x80px interactive areas.",
+    "test_ids": "Every button must have data-testid='[action]-[target]-button'"
+  },
+  "instructions_to_main_agent": [
+    "Implement two separate responsive view modes toggled via routing or device detection: Admin Mode (compact/mobile) and Tablet Mode (wall-mounted layout).",
+    "Use Phosphor Icons (yarn add @phosphor-icons/react) for sharp, technical iconography.",
+    "Do NOT use generic rounded borders (rounded-lg) globally. The aesthetic is 'Swiss High-Contrast' - stick to sharp edges (rounded-none) or very subtle 2px radii for structural tension.",
+    "For the Tablet view, implement the customizable background feature using the provided high-end abstract media URLs. When these backgrounds are active, use a strong translucent overlay (e.g. bg-white/80 backdrop-blur-md) on containers to guarantee data legibility.",
+    "Strictly follow the German label requirements: Annehmen, Nicht annehmbar, Nicht beendet, Beenden, Nicht erledigt. No English fallbacks for the UI."
+  ]
+}
