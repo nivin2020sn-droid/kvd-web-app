@@ -61,13 +61,18 @@ export default function ServerSettings() {
   };
 
   const handleSave = async () => {
+    const trimmed = baseUrl.trim().replace(/\/+$/, "");
+    if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+      Alert.alert("Fehler", "URL muss mit http:// oder https:// beginnen.");
+      return;
+    }
     setSaving(true);
     try {
-      await saveServerConfig(baseUrl, apiKey);
+      await saveServerConfig(trimmed, apiKey);
       notifyServerConfigChanged();
       Alert.alert(
         "Gespeichert",
-        baseUrl.trim() ? "Server-Einstellungen gespeichert." : "Offline-Modus aktiviert."
+        trimmed ? "Server-Einstellungen gespeichert." : "Offline-Modus aktiviert."
       );
     } finally {
       setSaving(false);
@@ -102,6 +107,10 @@ export default function ServerSettings() {
     const url = baseUrl.trim().replace(/\/+$/, "");
     if (!url) {
       Alert.alert("Fehler", "Bitte Server-URL eingeben.");
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      Alert.alert("Fehler", "URL muss mit http:// oder https:// beginnen.");
       return;
     }
     setTestStatus("testing");
