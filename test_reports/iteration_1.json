@@ -1,0 +1,44 @@
+{
+  "summary": "First full test iteration on Cleaning Tasks app. Backend: 29/29 pytest tests passed covering auth, settings, seeded lists, CRUD for all simple kinds (task-types/houses/stations/persons), task creation, all 6 status transitions incl. reason fields, archive-now, archive date listing and per-date retrieval. Frontend (mobile viewport 390x844): landing renders, admin login with admin123 routes to /admin, create-task flow submits, tablet shows task, ANNEHMEN turns card yellow (ANGENOMMEN), NICHT ERLEDIGT opens reason modal and turns card red with reason displayed. WebSocket real-time broadcast verified: new task posted from another client appears on tablet within ~4s with no manual refresh.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/seed-defaults", "issue": "Endpoint exists but is a no-op (returns {ok:true}); seeding is actually done in @app.on_event('startup'). Consider removing endpoint or making it re-seed."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/tablet (on 390px phone viewport)", "issues": ["Horizontal card layout (cardLeft 130px + cardRight 160px) leaves only ~100px for the center column, causing task_type text like 'Grundreiniger' and labels HAUS/STATION to wrap one character per line. Tablet view is designed for wide screens, but there is no responsive fallback or min-width guard; if a user accidentally opens /tablet on a phone, it looks broken. Consider adding a min-width breakpoint or stacking layout on narrow screens."]}
+    ],
+    "react_native_issues": [
+      {"component": "Image in tablet/index.tsx", "issue": "Warning: 'style.resizeMode is deprecated. Please use props.resizeMode' (logo Image uses resizeMode in StyleSheet). Non-blocking deprecation warning."},
+      {"component": "Router (expo-router)", "issue": "Console warning: \"The action 'GO_BACK' was not handled by any navigator\" after submitting a task from /admin/create because router.back() is called when /admin/create was reached via direct navigation. In normal flow (user taps 'Neu' on /admin) it's fine, but safer to use router.replace('/admin')."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_cleaning_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Consider making /tablet responsive (stack card layout) or add a min-width notice for phone viewports.",
+    "Replace Image style.resizeMode with props.resizeMode in /app/frontend/app/tablet/index.tsx to silence RN warning.",
+    "In /app/frontend/app/admin/create.tsx, after submit change router.back() to router.replace('/admin') to avoid GO_BACK warning on direct-navigation path."
+  ],
+  "critical_code_review_comments": [
+    "server.py stores ADMIN_TOKEN as a fixed string 'admin-session-token'. Anyone who reads the code can craft an admin request. Acceptable for the user's 'simple password' requirement, but note that changing the admin password does NOT invalidate already-issued tokens.",
+    "PATCH /api/tasks/{id}/status has no auth. Per product spec the tablet is public, so this is intentional, but it means anyone with the URL can change status. OK for internal LAN use.",
+    "server.py is 355 lines - healthy; no split needed yet.",
+    "_id is properly excluded from all Mongo queries (projection {_id:0}).",
+    "All endpoints use Pydantic validation and return proper 400/401/404 codes."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_cleaning_api.py (created)"
+  ],
+  "success_rate": {"backend": "100% (29/29)", "frontend": "100% of tested flows (6/6)"},
+  "seed_data_creation": "Test persons with 'TEST_' prefix were created and deleted per-test; one 'UI-TEST Aufgabe' task and one 'WS-MARKER-*' task were created via UI/API and left as today's tasks (they will be auto-archived at midnight UTC).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend is solid. Admin token is static string 'admin-session-token'. Frontend uses EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env. Tablet uses WebSocket at /api/ws and re-fetches on any {type: tasks_updated|settings_updated|persons_updated} broadcast. For in-browser cross-origin POSTs from scripts, use page.evaluate with same-origin fetch; direct python urllib gets blocked by preview proxy (403). Known minor: tablet layout breaks at <500px viewport (not a priority unless user asks)."
+}
