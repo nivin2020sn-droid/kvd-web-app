@@ -7,43 +7,59 @@ Einfache Android-App zur Verwaltung täglicher Reinigungsaufgaben zwischen zwei 
 
 Keine Mitarbeiter-Konten. Nur ein einfaches Admin-Passwort.
 
-## Geräte-Auswahl (Startbildschirm)
-- ADMIN → Login mit Passwort
-- TABLET → öffentliche Wandanzeige (kein Login)
+## Design-Prinzipien (v1.1)
+- **Tablet-Karten**: Glassmorphism-Stil (halbtransparentes Dunkel, abgerundete Ecken, dezenter Rahmen). Farbe des Kartens ändert sich **nicht** je Status.
+- **Status-Anzeige**: kleiner Farb-Dot + deutscher Text in Pillen-Form in der oberen rechten Ecke jeder Karte.
+- **Aktions-Buttons**: Glass-Pillen (klein, transparent, dünner Rahmen, farbiger Dot als Präfix). Keine großen farbigen Buttons.
+
+## Status-Labels (Deutsch)
+| Intern | Anzeige | Dot-Farbe |
+|---|---|---|
+| pending | Offen | grau |
+| accepted | Angenommen | gelb |
+| finished | Erledigt | grün |
+| cannot_accept | Nicht annehmbar | orange |
+| not_finished | Nicht beendbar | orange |
+| not_done | Nicht erledigt | rot |
 
 ## Admin-Funktionen
-- **Aufgabe erstellen**: Aufgabentyp, Haus, Station, Beschreibung, Personen (mehrere), Zeit von/bis. Jede Liste hat einen "Add"-Button für neue Einträge.
-- **Listen verwalten**: Aufgabentypen, Häuser, Stationen, Personen hinzufügen/löschen.
-- **Heute-Übersicht**: alle aktiven Aufgaben mit Statusbadges.
-- **Manuelles Archivieren**: "HEUTE JETZT ARCHIVIEREN".
-- **Archiv**: tagesweise Ansicht aller alten Aufgaben.
-- **Einstellungen**: Logo (Galerie), Hintergrund (Voreinstellungen oder Galerie-Bild), Passwort ändern.
+- Geräte-Auswahl → Admin-Login (Standard `admin123`)
+- Aufgabe erstellen (Typ / Haus / Station / Beschreibung / Personen / Zeit)
+- Listen verwalten (alle 4 Kategorien mit `+ Add`)
+- Heute-Übersicht mit manueller "Heute jetzt archivieren"
+- Archiv-Seite (tagesweise)
+- Einstellungen: Logo, Hintergrund (8 Voreinstellungen + Galerie), Passwort ändern
+- **App-Update Section** (neu v1.1):
+  - Anzeige `Aktuelle Version` (statisch aus `/app/frontend/src/lib/version.ts`)
+  - Button `Nach Updates suchen` → fetched `/api/update-info`
+  - Bei neuerer Version: `Neueste Version` in gelb + Änderungen-Box + `UPDATE HERUNTERLADEN` Button
+  - Bestätigungsdialog erinnert Nutzer: Daten (Aufgaben, Archiv, Listen, Einstellungen) bleiben erhalten
+  - Hinweis: Alle Daten liegen auf dem Server (MongoDB) — Neuinstallation der APK wischt nur das lokale Admin-Token
 
 ## Tablet-Funktionen
-Pro Aufgabe fünf Aktions-Buttons mit Statusänderung & Farbe:
-| Button | Status | Farbe | Verhalten |
-|---|---|---|---|
-| ANNEHMEN | accepted | Gelb | Zeitstempel `accepted_at` |
-| NICHT ANNEHMBAR | cannot_accept | Orange | Grund-Eingabe |
-| NICHT BEENDET | not_finished | Orange | Grund-Eingabe |
-| BEENDEN | finished | Grün | Zeitstempel `finished_at` |
-| NICHT ERLEDIGT | not_done | Rot | Grund-Eingabe |
+Pro Aufgaben-Karte 5 Glass-Aktions-Pillen: **Annehmen**, **Beenden**, **Nicht annehmbar**, **Nicht beendbar**, **Nicht erledigt**. Bei den drei "Nicht …" öffnet ein Grund-Modal.
 
 ## Echtzeit
-WebSocket `/api/ws` — broadcast bei jeder Änderung (`tasks_updated`, `*_updated`, `settings_updated`). Kein Polling.
+WebSocket `/api/ws` — Broadcast bei jeder Änderung.
 
 ## Archivierung
-- **Automatisch**: APScheduler Cronjob 00:00 UTC archiviert alle nicht-archivierten Aufgaben.
-- **Manuell**: Admin-Button.
-- Aufgaben werden nie gelöscht, nur archiviert (`archived: true` + `archive_date`).
+- Automatisch täglich 00:00 UTC (APScheduler)
+- Manuell über Admin-Button
+- Aufgaben werden nie gelöscht, nur archiviert
 
-## Sprache
-100% Deutsch.
+## Update-System
+- Backend-Datei `/app/backend/data/update.json` (editierbar, hot-reload):
+  ```json
+  { "latest_version": "1.0.0", "download_url": "", "changelog": "", "mandatory": false }
+  ```
+- Endpoint `GET /api/update-info` liest die Datei bei jedem Request.
+- Admin kann jederzeit die Datei anpassen (neue APK-URL, Changelog) und die App holt sich die Info.
+- Client vergleicht Semver (`1.2.0` > `1.1.3`) und zeigt bei Bedarf den Download-Button.
+
+## Tech Stack
+- Backend: FastAPI + Motor (MongoDB) + APScheduler + WebSocket
+- Frontend: Expo Router (React Native 0.81 / Expo SDK 54) + AsyncStorage + expo-image-picker
+- Sprache: 100% Deutsch
 
 ## Standardpasswort
 `admin123` (in Einstellungen änderbar).
-
-## Tech Stack
-- Backend: FastAPI + Motor (MongoDB) + APScheduler
-- Frontend: Expo Router (React Native) + AsyncStorage + expo-image-picker
-- Echtzeit: native WebSocket
