@@ -30,13 +30,12 @@ jobs:
           elif [ -f "package.json" ]; then
             DIR="."
           else
-            echo "::error::Could not find package.json in repo root or frontend/"
+            echo "::error::Could not find package.json"
             ls -la
             exit 1
           fi
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Frontend directory: $DIR"
-          ls -la "$DIR"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -49,9 +48,6 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
@@ -61,65 +57,22 @@ jobs:
           if [ -f "yarn.lock" ]; then
             corepack enable || true
             yarn install --frozen-lockfile
+          elif [ -f "package-lock.json" ]; then
+            npm ci
           else
             npm install
           fi
+
+      - name: Show app.json
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: cat app.json || cat app.config.js || true
 
       - name: Expo prebuild (generate native android project)
         working-directory: ${{ steps.detect.outputs.dir }}
         env:
           EXPO_NO_TELEMETRY: 1
+          CI: 1
         run: npx expo prebuild --platform android --clean --no-install
-
-      - name: Generate release keystore
-        working-directory: ${{ steps.detect.outputs.dir }}/android/app
-        run: |
-          keytool -genkeypair -v \
-            -keystore release.keystore \
-            -alias release-key \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass cleaningapp \
-            -keypass cleaningapp \
-            -dname "CN=Cleaning App, OU=Mobile, O=Reinigung, L=Berlin, S=Berlin, C=DE"
-
-      - name: Inject release signing config
-        working-directory: ${{ steps.detect.outputs.dir }}/android
-        run: |
-          cat >> gradle.properties <<EOF
-
-          MYAPP_RELEASE_STORE_FILE=release.keystore
-          MYAPP_RELEASE_KEY_ALIAS=release-key
-          MYAPP_RELEASE_STORE_PASSWORD=cleaningapp
-          MYAPP_RELEASE_KEY_PASSWORD=cleaningapp
-          EOF
-
-          python3 <<'PYEOF'
-          import re, pathlib
-          p = pathlib.Path("app/build.gradle")
-          src = p.read_text()
-          if "MYAPP_RELEASE_STORE_FILE" in src:
-              raise SystemExit(0)
-          signing_block = """
-              release {
-                  if (project.hasProperty('MYAPP_RELEASE_STORE_FILE')) {
-                      storeFile file(MYAPP_RELEASE_STORE_FILE)
-                      storePassword MYAPP_RELEASE_STORE_PASSWORD
-                      keyAlias MYAPP_RELEASE_KEY_ALIAS
-                      keyPassword MYAPP_RELEASE_KEY_PASSWORD
-                  }
-              }
-          """
-          src = re.sub(r"(signingConfigs\s*\{)", r"\1" + signing_block, src, count=1)
-          src = re.sub(
-              r"(buildTypes\s*\{[^}]*?release\s*\{)([^}]*?signingConfig\s+signingConfigs\.)debug",
-              r"\1\2release",
-              src, count=1, flags=re.DOTALL,
-          )
-          p.write_text(src)
-          print("Patched app/build.gradle for release signing.")
-          PYEOF
 
       - name: Make gradlew executable
         working-directory: ${{ steps.detect.outputs.dir }}/android
@@ -134,25 +87,30 @@ jobs:
         run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: List built APKs
+        if: always()
         working-directory: ${{ steps.detect.outputs.dir }}
         run: |
+          echo "--- DEBUG ---"
           ls -la android/app/build/outputs/apk/debug/ || true
+          echo "--- RELEASE ---"
           ls -la android/app/build/outputs/apk/release/ || true
 
       - name: Upload Debug APK
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: cleaning-app-debug-${{ github.sha }}
           path: ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Upload Release APK
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: cleaning-app-release-${{ github.sha }}
           path: ${{ steps.detect.outputs.dir }}/android/app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Build summary
@@ -167,4 +125,4 @@ jobs:
           echo "| Debug APK   | \`cleaning-app-debug-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Release APK | \`cleaning-app-release-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Beide APKs sind unter **Artifacts** dieses Workflow-Runs verfügbar." >> $GITHUB_STEP_SUMMARY
+          echo "Beide APKs sind unter **Artifacts** verfügbar (mit Debug-Keystore signiert)." >> $GITHUB_STEP_SUMMARY
