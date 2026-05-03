@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: #0F0F0F;
+    color: #FFFFFF;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+  }
+  button { font-family: inherit; }
+  input, textarea, select {
+    font-family: inherit;
+    font-size: 16px;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-black/55 backdrop-blur-md border border-white/10 rounded-2xl shadow-xl;
+  }
+  .glass-btn {
+    @apply flex items-center gap-2 px-4 py-2.5 rounded-full border border-white/20 bg-white/5 text-white text-sm font-semibold hover:bg-white/10 active:bg-white/15 transition select-none;
+  }
+  .input-base {
+    @apply w-full h-12 px-4 bg-surface-card border border-surface-border rounded-xl text-white text-base outline-none focus:border-brand-yellow transition;
+  }
+  .btn-primary {
+    @apply w-full h-14 flex items-center justify-center bg-brand-yellow text-black font-black tracking-widest rounded-xl active:opacity-80 transition disabled:opacity-60;
+  }
+  .btn-ghost {
+    @apply w-full h-12 flex items-center justify-center gap-2 border border-surface-border bg-surface-card text-white rounded-xl active:bg-white/5 transition;
+  }
+  .btn-danger {
+    @apply w-full h-12 flex items-center justify-center gap-2 border border-brand-red text-brand-red rounded-xl active:bg-red-950/30 transition;
+  }
+  .section-label {
+    @apply text-xs font-bold tracking-[3px] text-white/50 uppercase;
+  }
+  .chip {
+    @apply px-3.5 py-2.5 rounded-lg border border-surface-border bg-surface-card text-white text-sm font-semibold transition;
+  }
+  .chip-active {
+    @apply bg-brand-yellow border-brand-yellow text-black font-extrabold;
+  }
+  .chip-add {
+    @apply flex items-center gap-1 px-3 py-2.5 rounded-lg border border-dashed border-brand-yellow text-brand-yellow text-sm font-bold;
+  }
+}
+
+/* Hide scrollbars on tablet */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }

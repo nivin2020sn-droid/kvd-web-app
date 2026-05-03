@@ -101,3 +101,94 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: |
+  Convert the existing Reinigung (cleaning) Android/Expo app into a fully functional
+  Web App / PWA with 100% German UI, Glassmorphism design, offline-first mode
+  (localStorage), Admin + Tablet + Server-Settings flows, and ability to point
+  to a remote backend.
+
+frontend:
+  - task: "PWA Migration - Vite + React + Tailwind scaffold"
+    implemented: true
+    working: true
+    file: "/app/web"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Vite dev server running on port 3000 via supervisor (program:expo). Manifest + icons configured. PWA installable."
+
+  - task: "German UI - Landing/Admin/Tablet/Server"
+    implemented: true
+    working: true
+    file: "/app/web/src/App.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "All screens render in German, Glassmorphism dark theme. Verified via screenshot tool: Landing, Admin Login, Admin Home, Create Task, Tablet view."
+
+  - task: "Offline-first via localStorage"
+    implemented: true
+    working: true
+    file: "/app/web/src/lib/localStore.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Offline mode is now the default. Login admin123 works, task CRUD via local store. Server can be configured later under /admin/server."
+
+  - task: "Remote backend integration (kvd-backend.onrender.com)"
+    implemented: true
+    working: false
+    file: "/app/web/src/lib/api.ts"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "User-provided Render server (https://kvd-backend.onrender.com) is reachable but uses an INCOMPATIBLE schema. Only /api/health and /api/tasks (with `title` field) exist. Required endpoints (/api/admin/login, /api/houses, /api/persons, /api/stations, /api/task-types, /api/settings, /api/tasks/today, /api/tasks/archive, /api/tasks/archive-now, /api/update-info, WebSocket /api/ws) all return 'Route not found'. App falls back to offline mode automatically. User must either deploy a compatible backend or continue offline-only."
+
+backend:
+  - task: "Local FastAPI backend (kept available)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Local backend still running on :8001 with full schema. Not used by PWA by default but available if user wants to point app at it."
+
+metadata:
+  created_by: "main_agent"
+  version: "2.0"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "PWA Migration - Vite + React + Tailwind scaffold"
+    - "German UI - Landing/Admin/Tablet/Server"
+    - "Offline-first via localStorage"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Pivot complete: Expo project archived (moved to /tmp). Vite + React PWA running on port 3000.
+      All UI text in German, Glassmorphism design preserved. Default mode is offline (localStorage).
+      Discovered the user's Render backend at kvd-backend.onrender.com only exposes /api/health
+      and /api/tasks (different schema) — incompatible with our app. Need user decision on backend.
