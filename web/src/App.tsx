@@ -24,6 +24,7 @@ import {
   allowedActions,
 } from "./lib/workflow";
 import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent } from "./lib/workflow";
+import { useAdminName, setAdminName } from "./lib/adminName";
 
 // ============ App root ============
 export default function App() {
@@ -60,6 +61,7 @@ const Spin = () => <div className="w-8 h-8 border-4 border-brand-yellow border-t
 // ============ Landing ============
 function Landing() {
   const nav = useNavigate();
+  const adminName = useAdminName();
   return (
     <div className="min-h-full p-6 flex flex-col justify-between">
       <div className="mt-10">
@@ -69,7 +71,7 @@ function Landing() {
       <div className="space-y-5">
         <button onClick={() => nav("/admin/login")} className="w-full bg-surface-card border-2 border-brand-yellow p-7 text-left active:opacity-80 rounded-2xl">
           <Icon d={ICONS.phone} size={40} color="#FFD600" />
-          <div className="text-white font-black text-2xl tracking-[3px] mt-3">ADMIN</div>
+          <div className="text-white font-black text-2xl tracking-[3px] mt-3 uppercase">{adminName}</div>
           <div className="text-white/50 text-xs tracking-wider">Telefon · Aufgaben verwalten</div>
         </button>
         <button onClick={() => nav("/tablet")} className="w-full bg-surface-card border-2 border-brand-green p-7 text-left active:opacity-80 rounded-2xl">
@@ -86,6 +88,7 @@ function Landing() {
 // ============ Admin Login ============
 function AdminLogin() {
   const nav = useNavigate();
+  const adminName = useAdminName();
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -119,7 +122,7 @@ function AdminLogin() {
       <button onClick={() => nav(-1)} className="mt-2 p-1"><Icon d={ICONS.back} size={28} /></button>
       <div className="mt-10">
         <Icon d={ICONS.lock} size={40} color="#FFD600" />
-        <h1 className="text-3xl font-black tracking-[2px] mt-3">ADMIN BEREICH</h1>
+        <h1 className="text-3xl font-black tracking-[2px] mt-3 uppercase">{adminName} BEREICH</h1>
         <p className="text-white/50">Bitte Passwort eingeben</p>
         {cfg ? (
           <div className="mt-3 flex items-center gap-2 text-xs">
@@ -162,6 +165,7 @@ function AdminLogin() {
 // ============ Admin Home ============
 function AdminHome() {
   const nav = useNavigate();
+  const adminName = useAdminName();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [persons, setPersons] = useState<SimpleItem[]>([]);
   const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
@@ -214,7 +218,7 @@ function AdminHome() {
   return (
     <div className="min-h-full flex flex-col">
       <div className="flex items-center justify-between p-5">
-        <div><div className="text-2xl font-black tracking-widest">ADMIN</div><div className="text-white/50 text-xs tracking-wider">Aufgaben heute · {tasks.length}</div></div>
+        <div><div className="text-2xl font-black tracking-widest uppercase">{adminName}</div><div className="text-white/50 text-xs tracking-wider">Aufgaben heute · {tasks.length}</div></div>
         <button onClick={logout} className="p-2"><Icon d={ICONS.logout} size={22} /></button>
       </div>
       <div className={`mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-full border bg-surface-card ${online ? "border-brand-green" : "border-brand-orange"}`}>
@@ -264,15 +268,15 @@ function AdminHome() {
                 <AdminCell label="Beendet" value={formatTime(wf.finished_at)} color={wf.finished_at ? EVENT_COLOR.beenden : undefined} />
               </div>
 
-              {/* Live work timer + Pause total */}
-              <div className="grid grid-cols-3 gap-2">
-                <div className="col-span-2 rounded-lg px-3 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
+              {/* Live work timer + Pause total — gleiche Größe, beide identisch */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-lg px-3 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
                   <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">{wfStatus === "finished" ? "Gesamt-Arbeitszeit" : "Arbeitszeit"}</div>
-                  <div className="font-mono tabular-nums text-xl font-black" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}{isRunning && <span className="ml-2 text-[10px] tracking-widest" style={{ color: STATUS_COLOR.running }}>● LIVE</span>}</div>
+                  <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}{isRunning && <span className="ml-2 text-[10px] tracking-widest" style={{ color: STATUS_COLOR.running }}>● LIVE</span>}</div>
                 </div>
-                <div className="rounded-lg px-3 py-2 border" style={{ borderColor: EVENT_COLOR.pause + "55", backgroundColor: EVENT_COLOR.pause + "10" }}>
+                <div className="rounded-lg px-3 py-2 border" style={{ borderColor: EVENT_COLOR.pause + "55", backgroundColor: EVENT_COLOR.pause + "12" }}>
                   <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">Pause-Zeit</div>
-                  <div className="font-mono tabular-nums text-xl font-black" style={{ color: EVENT_COLOR.pause }}>{formatDuration(totalPauseMs(wf, Date.now()))}</div>
+                  <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: EVENT_COLOR.pause }}>{formatDuration(totalPauseMs(wf, Date.now()))}</div>
                 </div>
               </div>
 
@@ -571,11 +575,21 @@ function AdminArchive() {
 // ============ Admin Settings ============
 function AdminSettings() {
   const nav = useNavigate();
+  const currentName = useAdminName();
+  const [adminNameInput, setAdminNameInput] = useState<string>(currentName);
+  const [nameSaved, setNameSaved] = useState(false);
+  useEffect(() => { setAdminNameInput(currentName); }, [currentName]);
   const [s, setS] = useState<AppSettings | null>(null);
   const [pw, setPw] = useState("");
   const [checking, setChecking] = useState(false);
   const [info, setInfo] = useState<{ latest_version: string; download_url: string; changelog?: string } | null>(null);
   const [status, setStatus] = useState<"idle" | "latest" | "available">("idle");
+
+  const saveName = () => {
+    setAdminName(adminNameInput);
+    setNameSaved(true);
+    setTimeout(() => setNameSaved(false), 1800);
+  };
 
   useEffect(() => { (async () => setS(await api<AppSettings>("/settings")))(); }, []);
   const upd = async (patch: any) => { try { setS(await api<AppSettings>("/settings", { method: "PUT", auth: true, body: patch })); } catch (e: any) { alert(e?.message); } };
@@ -609,6 +623,23 @@ function AdminSettings() {
         <div className="w-7" />
       </div>
       <div className="p-4 space-y-7">
+        <div>
+          <div className="section-label mb-3">Admin Name</div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={adminNameInput}
+              onChange={(e) => setAdminNameInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") saveName(); }}
+              placeholder="Admin"
+              maxLength={24}
+              className="input-base flex-1"
+            />
+            <button onClick={saveName} className="btn-primary px-5 h-12 whitespace-nowrap">SPEICHERN</button>
+          </div>
+          {nameSaved && <div className="mt-2 text-brand-green text-xs font-bold flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-brand-green" /> Gespeichert · Anzeige aktualisiert</div>}
+          <div className="mt-2 text-white/50 text-xs">Aktuell: <span className="font-bold text-brand-yellow">{currentName}</span> · Erscheint auf Startseite, Login und Admin-Header.</div>
+        </div>
         <div>
           <div className="section-label mb-3">Logo</div>
           <div className="h-32 bg-surface-card border border-surface-border flex items-center justify-center mb-3 rounded-xl overflow-hidden">
