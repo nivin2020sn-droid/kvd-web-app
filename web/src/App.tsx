@@ -72,14 +72,30 @@ function AdminLogin() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [serverProblem, setServerProblem] = useState(false);
+  const cfg = getServerConfigSync() || loadServerConfig();
   const submit = async () => {
     if (!password) return;
-    setLoading(true); setErr("");
+    setLoading(true); setErr(""); setServerProblem(false);
     try {
       const r = await api<{ token: string }>("/admin/login", { method: "POST", body: { password } });
       setToken(r.token);
       nav("/admin");
-    } catch { setErr("Falsches Passwort"); } finally { setLoading(false); }
+    } catch (e: any) {
+      // 401 = wrong password. Anything else = server is unreachable / incompatible
+      if (e?.status === 401) {
+        setErr("Falsches Passwort");
+      } else {
+        setErr("Server nicht erreichbar oder inkompatibel.");
+        setServerProblem(true);
+      }
+    } finally { setLoading(false); }
+  };
+  const switchToOffline = () => {
+    clearServerConfig();
+    setErr(""); setServerProblem(false);
+    // try login again automatically with same password
+    if (password) submit();
   };
   return (
     <div className="min-h-full p-6">
@@ -88,11 +104,37 @@ function AdminLogin() {
         <Icon d={ICONS.lock} size={40} color="#FFD600" />
         <h1 className="text-3xl font-black tracking-[2px] mt-3">ADMIN BEREICH</h1>
         <p className="text-white/50">Bitte Passwort eingeben</p>
+        {cfg ? (
+          <div className="mt-3 flex items-center gap-2 text-xs">
+            <span className="w-1.5 h-1.5 rounded-full bg-brand-green" />
+            <span className="text-white/50 truncate">Server: {cfg.baseUrl}</span>
+          </div>
+        ) : (
+          <div className="mt-3 flex items-center gap-2 text-xs">
+            <span className="w-1.5 h-1.5 rounded-full bg-brand-orange" />
+            <span className="text-brand-orange">Offline-Modus · Lokale Daten</span>
+          </div>
+        )}
       </div>
-      <div className="mt-12 space-y-3">
+      <div className="mt-10 space-y-3">
         <label className="section-label">Passwort</label>
         <input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} placeholder="••••••" className="input-base" />
         {err && <p className="text-brand-red text-sm">{err}</p>}
+        {serverProblem && (
+          <div className="border border-brand-orange/60 bg-orange-500/10 rounded-xl p-3 space-y-2">
+            <p className="text-brand-orange text-xs font-bold">
+              Der konfigurierte Server antwortet nicht oder ist inkompatibel.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={switchToOffline} className="flex-1 h-11 bg-brand-yellow text-black rounded-lg font-black text-xs tracking-wide">
+                OFFLINE-MODUS
+              </button>
+              <button onClick={() => nav("/admin/server")} className="flex-1 h-11 border border-white/20 rounded-lg font-bold text-xs">
+                SERVER ÄNDERN
+              </button>
+            </div>
+          </div>
+        )}
         <button onClick={submit} disabled={loading} className="btn-primary mt-2">{loading ? "..." : "ANMELDEN"}</button>
         <p className="text-white/40 text-xs text-center mt-4">Standardpasswort: admin123</p>
       </div>
