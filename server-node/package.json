@@ -1,0 +1,21 @@
+{
+  "name": "reinigung-backend",
+  "version": "1.0.0",
+  "description": "Reinigung Aufgabenverwaltung – Node.js + Express + MongoDB Backend",
+  "main": "src/server.js",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "mongoose": "^8.8.0",
+    "node-cron": "^3.0.3",
+    "uuid": "^11.0.3",
+    "ws": "^8.18.0"
+  }
+}

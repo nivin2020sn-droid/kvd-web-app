@@ -1,0 +1,289 @@
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import mongoose from 'mongoose';
+import { WebSocketServer } from 'ws';
+import http from 'http';
+import cron from 'node-cron';
+import { v4 as uuidv4 } from 'uuid';
+
+const PORT = process.env.PORT || 8080;
+const MONGO_URL = process.env.MONGO_URL;
+const DB_NAME = process.env.DB_NAME || 'reinigung';
+const DEFAULT_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const ADMIN_TOKEN = 'admin-session-token';
+
+if (!MONGO_URL) {
+  console.error('❌ MONGO_URL ist nicht gesetzt');
+  process.exit(1);
+}
+
+// ===== Mongoose Schemas =====
+const SimpleItemSchema = new mongoose.Schema({
+  id: { type: String, default: uuidv4 },
+  name: String,
+}, { versionKey: false });
+
+const TaskTypeModel = mongoose.model('TaskType', SimpleItemSchema, 'task_types');
+const HouseModel    = mongoose.model('House',    SimpleItemSchema, 'houses');
+const StationModel  = mongoose.model('Station',  SimpleItemSchema, 'stations');
+const PersonModel   = mongoose.model('Person',   SimpleItemSchema, 'persons');
+
+const TaskSchema = new mongoose.Schema({
+  id: { type: String, default: uuidv4, unique: true },
+  task_type: String,
+  haus: String,
+  station: String,
+  description: { type: String, default: '' },
+  person_ids: { type: [String], default: [] },
+  time_from: String,
+  time_to: String,
+  status: { type: String, default: 'pending' },
+  accept_reason: { type: String, default: null },
+  not_finished_reason: { type: String, default: null },
+  not_done_reason: { type: String, default: null },
+  accepted_at: { type: String, default: null },
+  finished_at: { type: String, default: null },
+  created_at: { type: String, default: () => new Date().toISOString() },
+  archived: { type: Boolean, default: false },
+  archive_date: { type: String, default: null },
+  task_date: { type: String, default: () => new Date().toISOString().slice(0, 10) },
+}, { versionKey: false });
+const TaskModel = mongoose.model('Task', TaskSchema, 'tasks');
+
+const SettingsSchema = new mongoose.Schema({
+  _id: { type: String, default: 'singleton' },
+  password: { type: String, default: DEFAULT_PASSWORD },
+  logo_base64: { type: String, default: null },
+  background_type: { type: String, default: 'preset' },
+  background_value: { type: String, default: 'dark' },
+}, { versionKey: false, _id: false });
+const SettingsModel = mongoose.model('Settings', SettingsSchema, 'settings');
+
+// ===== Helpers =====
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const nowIso = () => new Date().toISOString();
+
+async function getSettings() {
+  let doc = await SettingsModel.findById('singleton').lean();
+  if (!doc) {
+    await SettingsModel.create({ _id: 'singleton' });
+    doc = await SettingsModel.findById('singleton').lean();
+  }
+  return doc;
+}
+
+function publicSettings(s) {
+  return {
+    logo_base64: s.logo_base64 || null,
+    background_type: s.background_type || 'preset',
+    background_value: s.background_value || 'dark',
+  };
+}
+
+function requireAdmin(req, res, next) {
+  const auth = req.headers.authorization || '';
+  if (auth === `Bearer ${ADMIN_TOKEN}`) return next();
+  return res.status(401).json({ detail: 'Unauthorized' });
+}
+
+const KIND_MODEL = {
+  'task-types': TaskTypeModel,
+  'houses': HouseModel,
+  'stations': StationModel,
+  'persons': PersonModel,
+};
+
+// ===== App =====
+const app = express();
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: '10mb' }));
+
+// Health
+app.get('/api/health', async (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Reinigung Backend läuft',
+    time: nowIso(),
+    db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+  });
+});
+
+app.get('/api', (req, res) => res.json({ message: 'Reinigung Aufgabenverwaltung API' }));
+app.get('/', (req, res) => res.json({ message: 'Reinigung Aufgabenverwaltung API' }));
+
+// Login
+app.post('/api/admin/login', async (req, res) => {
+  const { password } = req.body || {};
+  const s = await getSettings();
+  if (password === (s.password || DEFAULT_PASSWORD)) return res.json({ token: ADMIN_TOKEN });
+  return res.status(401).json({ detail: 'Falsches Passwort' });
+});
+
+// Settings
+app.get('/api/settings', async (req, res) => {
+  res.json(publicSettings(await getSettings()));
+});
+app.put('/api/settings', requireAdmin, async (req, res) => {
+  const allowed = ['password', 'logo_base64', 'background_type', 'background_value'];
+  const update = {};
+  for (const k of allowed) if (req.body[k] !== undefined) update[k] = req.body[k];
+  await SettingsModel.updateOne({ _id: 'singleton' }, { $set: update }, { upsert: true });
+  const s = await getSettings();
+  broadcast({ type: 'settings_updated' });
+  res.json(publicSettings(s));
+});
+
+// CRUD: simple lists
+function kindRoutes(kind) {
+  const Model = KIND_MODEL[kind];
+  app.get(`/api/${kind}`, async (req, res) => {
+    const list = await Model.find({}, { _id: 0 }).lean();
+    res.json(list);
+  });
+  app.post(`/api/${kind}`, requireAdmin, async (req, res) => {
+    const name = (req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ detail: 'Name required' });
+    const doc = await Model.create({ id: uuidv4(), name });
+    broadcast({ type: `${kind}_updated` });
+    res.json({ id: doc.id, name: doc.name });
+  });
+  app.delete(`/api/${kind}/:id`, requireAdmin, async (req, res) => {
+    await Model.deleteOne({ id: req.params.id });
+    broadcast({ type: `${kind}_updated` });
+    res.json({ ok: true });
+  });
+}
+for (const kind of Object.keys(KIND_MODEL)) kindRoutes(kind);
+
+// Tasks
+app.get('/api/tasks/today', async (req, res) => {
+  const today = todayStr();
+  const tasks = await TaskModel.find({ archived: false, task_date: today }, { _id: 0 }).lean();
+  res.json(tasks);
+});
+
+app.post('/api/tasks', requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  if (!b.task_type || !b.haus || !b.station || !b.time_from || !b.time_to) {
+    return res.status(400).json({ detail: 'Fehlende Pflichtfelder' });
+  }
+  const task = await TaskModel.create({
+    id: uuidv4(),
+    task_type: b.task_type,
+    haus: b.haus,
+    station: b.station,
+    description: b.description || '',
+    person_ids: b.person_ids || [],
+    time_from: b.time_from,
+    time_to: b.time_to,
+    task_date: todayStr(),
+  });
+  broadcast({ type: 'tasks_updated' });
+  const obj = task.toObject();
+  delete obj._id;
+  res.json(obj);
+});
+
+app.patch('/api/tasks/:id/status', async (req, res) => {
+  const valid = new Set(['pending', 'accepted', 'finished', 'cannot_accept', 'not_finished', 'not_done']);
+  const status = req.body?.status;
+  const reason = req.body?.reason || '';
+  if (!valid.has(status)) return res.status(400).json({ detail: 'Invalid status' });
+  const update = { status };
+  if (status === 'accepted') update.accepted_at = nowIso();
+  else if (status === 'finished') update.finished_at = nowIso();
+  else if (status === 'cannot_accept') update.accept_reason = reason;
+  else if (status === 'not_finished') update.not_finished_reason = reason;
+  else if (status === 'not_done') update.not_done_reason = reason;
+  const r = await TaskModel.updateOne({ id: req.params.id }, { $set: update });
+  if (r.matchedCount === 0) return res.status(404).json({ detail: 'Task not found' });
+  broadcast({ type: 'tasks_updated' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/tasks/:id', requireAdmin, async (req, res) => {
+  await TaskModel.updateOne({ id: req.params.id }, { $set: { archived: true, archive_date: todayStr() } });
+  broadcast({ type: 'tasks_updated' });
+  res.json({ ok: true });
+});
+
+app.post('/api/tasks/archive-now', requireAdmin, async (req, res) => {
+  const r = await TaskModel.updateMany({ archived: false }, { $set: { archived: true, archive_date: todayStr() } });
+  broadcast({ type: 'tasks_updated' });
+  res.json({ archived: r.modifiedCount });
+});
+
+app.get('/api/tasks/archive', async (req, res) => {
+  const date = req.query.date;
+  if (date) {
+    const tasks = await TaskModel.find({ archived: true, archive_date: date }, { _id: 0 }).lean();
+    return res.json({ date, tasks });
+  }
+  const dates = await TaskModel.distinct('archive_date', { archived: true });
+  const sorted = dates.filter(Boolean).sort().reverse();
+  res.json({ dates: sorted, tasks: [] });
+});
+
+// Update info
+app.get('/api/update-info', (req, res) => {
+  res.json({ latest_version: '1.0.0', download_url: '', changelog: '', mandatory: false });
+});
+
+// 404 handler – behält JSON-Format
+app.use((req, res) => res.status(404).json({ detail: 'Route not found', path: req.path }));
+
+// ===== HTTP + WebSocket =====
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/api/ws' });
+
+function broadcast(message) {
+  const data = JSON.stringify(message);
+  for (const client of wss.clients) {
+    if (client.readyState === 1) {
+      try { client.send(data); } catch {}
+    }
+  }
+}
+
+wss.on('connection', (ws) => {
+  ws.on('message', () => { /* keep alive – Clients senden nichts */ });
+  ws.on('error', () => { try { ws.close(); } catch {} });
+});
+
+// Auto-archive at midnight UTC
+cron.schedule('0 0 * * *', async () => {
+  try {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const r = await TaskModel.updateMany({ archived: false }, { $set: { archived: true, archive_date: yesterday } });
+    broadcast({ type: 'tasks_updated' });
+    console.log(`🌙 Auto-archived ${r.modifiedCount} Aufgaben um Mitternacht`);
+  } catch (e) { console.error('Auto-archive Fehler', e); }
+}, { timezone: 'UTC' });
+
+// ===== Seed defaults =====
+async function seedDefaults() {
+  const seed = async (Model, names) => {
+    const c = await Model.estimatedDocumentCount();
+    if (c === 0) await Model.insertMany(names.map((name) => ({ id: uuidv4(), name })));
+  };
+  await seed(TaskTypeModel, ['Grundreiniger', 'Glasreiniger', 'Baureiniger', 'Endbaureiniger']);
+  await seed(HouseModel, ['A', 'B', 'C']);
+  await seed(StationModel, ['10', '11', '12']);
+  await getSettings();
+}
+
+// ===== Start =====
+(async () => {
+  try {
+    await mongoose.connect(MONGO_URL, { dbName: DB_NAME });
+    console.log('✅ MongoDB verbunden:', DB_NAME);
+    await seedDefaults();
+    server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Reinigung Backend läuft auf Port ${PORT}`));
+  } catch (e) {
+    console.error('Startfehler:', e);
+    process.exit(1);
+  }
+})();
+
+process.on('SIGTERM', () => { server.close(); mongoose.disconnect(); });

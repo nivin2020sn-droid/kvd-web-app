@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: kvd-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: reinigung
+      - key: ADMIN_PASSWORD
+        value: admin123
+      - key: NODE_VERSION
+        value: 20
