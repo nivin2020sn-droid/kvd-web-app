@@ -29,7 +29,7 @@ export function getAdminName(): string {
 }
 
 export function setAdminName(name: string): string {
-  const clean = (name || "").trim() || DEFAULT_NAME;
+  const clean = (name || "").trim().slice(0, 20) || DEFAULT_NAME;
   cached = clean;
   initialized = true;
   try {

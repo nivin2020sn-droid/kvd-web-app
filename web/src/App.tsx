@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
+import { Routes, Route, useNavigate, useLocation, useParams } from "react-router-dom";
 import { Icon, ICONS } from "./components/Icons";
 import { api, setToken } from "./lib/api";
 import { useWebSocket } from "./lib/useWebSocket";
@@ -46,6 +46,7 @@ export default function App() {
       <Route path="/admin/login" element={<AdminLogin />} />
       <Route path="/admin" element={<AdminHome />} />
       <Route path="/admin/create" element={<AdminCreate />} />
+      <Route path="/admin/edit/:id" element={<AdminCreate />} />
       <Route path="/admin/manage" element={<AdminManage />} />
       <Route path="/admin/archive" element={<AdminArchive />} />
       <Route path="/admin/settings" element={<AdminSettings />} />
@@ -71,7 +72,7 @@ function Landing() {
       <div className="space-y-5">
         <button onClick={() => nav("/admin/login")} className="w-full bg-surface-card border-2 border-brand-yellow p-7 text-left active:opacity-80 rounded-2xl">
           <Icon d={ICONS.phone} size={40} color="#FFD600" />
-          <div className="text-white font-black text-2xl tracking-[3px] mt-3 uppercase">{adminName}</div>
+          <div className="text-white font-black text-2xl tracking-[3px] mt-3 uppercase truncate">{adminName}</div>
           <div className="text-white/50 text-xs tracking-wider">Telefon · Aufgaben verwalten</div>
         </button>
         <button onClick={() => nav("/tablet")} className="w-full bg-surface-card border-2 border-brand-green p-7 text-left active:opacity-80 rounded-2xl">
@@ -122,7 +123,7 @@ function AdminLogin() {
       <button onClick={() => nav(-1)} className="mt-2 p-1"><Icon d={ICONS.back} size={28} /></button>
       <div className="mt-10">
         <Icon d={ICONS.lock} size={40} color="#FFD600" />
-        <h1 className="text-3xl font-black tracking-[2px] mt-3 uppercase">{adminName} BEREICH</h1>
+        <h1 className="text-3xl font-black tracking-[2px] mt-3 uppercase truncate max-w-full">{adminName} BEREICH</h1>
         <p className="text-white/50">Bitte Passwort eingeben</p>
         {cfg ? (
           <div className="mt-3 flex items-center gap-2 text-xs">
@@ -209,16 +210,21 @@ function AdminHome() {
     if (!confirm("Alle heutigen Aufgaben archivieren?")) return;
     try { await api("/tasks/archive-now", { method: "POST", auth: true }); load(); } catch (e: any) { alert("Fehler: " + (e?.message || "")); }
   };
-  const del = async (id: string) => {
-    if (!confirm("Aufgabe entfernen? Sie wird sofort archiviert.")) return;
+  const archiveOne = async (id: string) => {
+    if (!confirm("Aufgabe archivieren? Sie wird aus der heutigen Liste entfernt.")) return;
     try { await api(`/tasks/${id}`, { method: "DELETE", auth: true }); load(); } catch {}
   };
+  const deleteOne = async (id: string) => {
+    if (!confirm("Aufgabe ENDGÜLTIG löschen? Diese Aktion kann nicht rückgängig gemacht werden.")) return;
+    try { await api(`/tasks/${id}?permanent=1`, { method: "DELETE", auth: true }); load(); } catch {}
+  };
+  const editOne = (id: string) => nav(`/admin/edit/${id}`);
   void tick;
 
   return (
     <div className="min-h-full flex flex-col">
       <div className="flex items-center justify-between p-5">
-        <div><div className="text-2xl font-black tracking-widest uppercase">{adminName}</div><div className="text-white/50 text-xs tracking-wider">Aufgaben heute · {tasks.length}</div></div>
+        <div className="min-w-0 flex-1 mr-3"><div className="text-2xl font-black tracking-widest uppercase truncate">{adminName}</div><div className="text-white/50 text-xs tracking-wider">Aufgaben heute · {tasks.length}</div></div>
         <button onClick={logout} className="p-2"><Icon d={ICONS.logout} size={22} /></button>
       </div>
       <div className={`mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-full border bg-surface-card ${online ? "border-brand-green" : "border-brand-orange"}`}>
@@ -293,8 +299,17 @@ function AdminHome() {
               {/* Vollständiger Verlauf aller Ereignisse (chronologisch) */}
               <EventHistoryList events={wf.events || []} dark={true} />
 
-              <div className="flex justify-end items-center mt-1">
-                <button onClick={() => del(t.id)}><Icon d={ICONS.trash} size={18} color="#FF3B30" /></button>
+              {/* Actions: Bearbeiten | Archivieren | Löschen */}
+              <div className="grid grid-cols-3 gap-2 mt-1">
+                <button onClick={() => editOne(t.id)} className="h-10 rounded-lg border border-brand-yellow/60 bg-brand-yellow/10 text-brand-yellow text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
+                  <Icon d={ICONS.edit} size={14} color="#FFD600" /> Bearbeiten
+                </button>
+                <button onClick={() => archiveOne(t.id)} className="h-10 rounded-lg border border-brand-orange/60 bg-orange-500/10 text-brand-orange text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
+                  <Icon d={ICONS.archive} size={14} color="#FF9500" /> Archivieren
+                </button>
+                <button onClick={() => deleteOne(t.id)} className="h-10 rounded-lg border border-brand-red/60 bg-red-500/10 text-brand-red text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
+                  <Icon d={ICONS.trash} size={14} color="#FF3B30" /> Löschen
+                </button>
               </div>
             </div>
           );
@@ -360,9 +375,12 @@ const ToolBtn = ({ onClick, icon, label, primary }: any) => (
   </button>
 );
 
-// ============ Admin Create ============
+// ============ Admin Create / Edit ============
 function AdminCreate() {
   const nav = useNavigate();
+  const params = useParams();
+  const editId = params.id || null;
+  const isEdit = !!editId;
   const [tt, setTt] = useState<SimpleItem[]>([]); const [hs, setHs] = useState<SimpleItem[]>([]);
   const [st, setSt] = useState<SimpleItem[]>([]); const [pp, setPp] = useState<SimpleItem[]>([]);
   const [taskType, setTaskType] = useState(""); const [haus, setHaus] = useState(""); const [station, setStation] = useState("");
@@ -371,6 +389,7 @@ function AdminCreate() {
   const [saving, setSaving] = useState(false);
   const [addFor, setAddFor] = useState<null | { kind: string; label: string }>(null);
   const [newName, setNewName] = useState("");
+  const [loadError, setLoadError] = useState<string>("");
 
   const load = async () => {
     const [a, b, c, d] = await Promise.all([
@@ -378,8 +397,33 @@ function AdminCreate() {
       api<SimpleItem[]>("/stations"), api<SimpleItem[]>("/persons")
     ]);
     setTt(a); setHs(b); setSt(c); setPp(d);
+    if (isEdit && editId) {
+      try {
+        // Find task among today's tasks or archive
+        const today = await api<Task[]>("/tasks/today");
+        let task = today.find((t) => t.id === editId);
+        if (!task) {
+          // try archive dates
+          const { dates } = await api<{ dates: string[] }>("/tasks/archive");
+          for (const dt of dates || []) {
+            const { tasks: arr } = await api<{ tasks: Task[] }>(`/tasks/archive?date=${encodeURIComponent(dt)}`);
+            const found = arr?.find((t) => t.id === editId);
+            if (found) { task = found; break; }
+          }
+        }
+        if (task) {
+          setTaskType(task.task_type); setHaus(task.haus); setStation(task.station);
+          setDesc(task.description || ""); setPids(task.person_ids || []);
+          setTFrom(task.time_from || "07:00"); setTTo(task.time_to || "15:30");
+        } else {
+          setLoadError("Aufgabe nicht gefunden");
+        }
+      } catch (e: any) {
+        setLoadError(e?.message || "Fehler beim Laden");
+      }
+    }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [editId]);
 
   const addItem = async () => {
     if (!addFor || !newName.trim()) return;
@@ -396,7 +440,12 @@ function AdminCreate() {
     if (!taskType || !haus || !station || !tFrom || !tTo) { alert("Bitte alle Pflichtfelder ausfüllen"); return; }
     setSaving(true);
     try {
-      await api("/tasks", { method: "POST", auth: true, body: { task_type: taskType, haus, station, description: desc, person_ids: pids, time_from: tFrom, time_to: tTo } });
+      const body = { task_type: taskType, haus, station, description: desc, person_ids: pids, time_from: tFrom, time_to: tTo };
+      if (isEdit && editId) {
+        await api(`/tasks/${editId}`, { method: "PUT", auth: true, body });
+      } else {
+        await api("/tasks", { method: "POST", auth: true, body });
+      }
       nav("/admin");
     } catch (e: any) { alert("Fehler: " + (e?.message || "")); } finally { setSaving(false); }
   };
@@ -417,7 +466,7 @@ function AdminCreate() {
     <div className="min-h-full flex flex-col">
       <div className="flex items-center justify-between p-4 border-b border-surface-border">
         <button onClick={() => nav(-1)}><Icon d={ICONS.back} size={28} /></button>
-        <div className="font-black tracking-[3px] text-sm">NEUE AUFGABE</div>
+        <div className="font-black tracking-[3px] text-sm">{isEdit ? "AUFGABE BEARBEITEN" : "NEUE AUFGABE"}</div>
         <div className="w-7" />
       </div>
       <div className="flex-1 p-4 overflow-auto pb-20">
@@ -442,7 +491,8 @@ function AdminCreate() {
           <div className="flex-1"><label className="section-label">Bis</label><input type="time" value={tTo} onChange={(e) => setTTo(e.target.value)} className="input-base mt-2" /></div>
         </div>
       </div>
-      <button onClick={submit} disabled={saving} className="btn-primary m-4 mt-0">{saving ? "..." : "AUFGABE ERSTELLEN"}</button>
+      <button onClick={submit} disabled={saving} className="btn-primary m-4 mt-0">{saving ? "..." : isEdit ? "ÄNDERUNGEN SPEICHERN" : "AUFGABE ERSTELLEN"}</button>
+      {loadError && <div className="mx-4 mb-3 text-brand-red text-sm font-bold">{loadError}</div>}
       {addFor && <AddModal label={addFor.label} value={newName} setValue={setNewName} onCancel={() => { setAddFor(null); setNewName(""); }} onSubmit={addItem} />}
     </div>
   );
@@ -514,13 +564,35 @@ function AdminArchive() {
   const [selected, setSelected] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [persons, setPersons] = useState<SimpleItem[]>([]);
-  useEffect(() => { (async () => {
-    const [d, p] = await Promise.all([api<{ dates: string[] }>("/tasks/archive"), api<SimpleItem[]>("/persons")]);
-    setDates(d.dates); setPersons(p);
-  })(); }, []);
-  const loadDate = async (date: string) => { setSelected(date); const r = await api<{ tasks: Task[] }>(`/tasks/archive?date=${date}`); setTasks(r.tasks); };
+  const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
+  const [resetting, setResetting] = useState(false);
+  const loadAll = async () => {
+    const [d, p, wfMap] = await Promise.all([
+      api<{ dates: string[] }>("/tasks/archive"),
+      api<SimpleItem[]>("/persons"),
+      fetchAllWorkflows(),
+    ]);
+    setDates(d.dates); setPersons(p); setWorkflows(wfMap);
+  };
+  useEffect(() => { loadAll(); }, []);
+  const loadDate = async (date: string) => {
+    setSelected(date);
+    const r = await api<{ tasks: Task[] }>(`/tasks/archive?date=${date}`);
+    setTasks(r.tasks);
+  };
+  const resetArchive = async () => {
+    if (!confirm("Möchten Sie wirklich alle archivierten Aufgaben löschen?")) return;
+    setResetting(true);
+    try {
+      await api(`/tasks/archive/all`, { method: "DELETE", auth: true });
+      setSelected(null); setTasks([]);
+      await loadAll();
+    } catch (e: any) {
+      alert("Fehler: " + (e?.message || ""));
+    } finally { setResetting(false); }
+  };
   const pn = (id: string) => persons.find((x) => x.id === id)?.name || "—";
-  const fmt = (iso: string) => new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+
   if (selected) return (
     <div className="min-h-full">
       <div className="flex items-center justify-between p-4 border-b border-surface-border">
@@ -530,35 +602,60 @@ function AdminArchive() {
       </div>
       <div className="p-4 space-y-3">
         {tasks.length === 0 && <div className="text-white/50 text-center mt-10">Keine Aufgaben in diesem Archiv</div>}
-        {tasks.map((t) => (
-          <div key={t.id} className="bg-surface-card border border-surface-border p-3.5 rounded-xl space-y-1.5">
-            <div className="flex gap-2 items-start">
-              <div className="flex-1"><div className="font-extrabold">{t.task_type}</div><div className="text-white/50 text-xs">Haus {t.haus} · Station {t.station} · {t.time_from}–{t.time_to}</div></div>
-              <div className="flex items-center gap-1.5 border rounded-full px-2.5 py-1" style={{ borderColor: STATUS_DOT[t.status] + "55", backgroundColor: STATUS_DOT[t.status] + "15" }}>
-                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_DOT[t.status] }} />
-                <span className="text-[10px] font-bold">{STATUS_LABEL[t.status]}</span>
+        {tasks.map((t) => {
+          const wf = workflows[t.id];
+          const wfStatus: WorkflowStatus = wf?.status || "idle";
+          const totalMs = wf ? totalWorkMs(wf) : 0;
+          const pauseMs = wf ? totalPauseMs(wf) : 0;
+          return (
+            <div key={t.id} className="bg-surface-card border border-surface-border p-3.5 rounded-xl space-y-2">
+              <div className="flex gap-2 items-start">
+                <div className="flex-1 min-w-0">
+                  <div className="font-extrabold truncate">{t.task_type}</div>
+                  <div className="text-white/50 text-xs">Haus {t.haus} · Station {t.station} · {t.time_from}–{t.time_to}</div>
+                </div>
+                <div className="flex items-center gap-1.5 border rounded-full px-2.5 py-1" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "15" }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
+                  <span className="text-[10px] font-bold" style={{ color: STATUS_COLOR[wfStatus] }}>{STATUS_LABEL_DE[wfStatus]}</span>
+                </div>
               </div>
+              {t.description && <div className="text-sm">{t.description}</div>}
+              <div className="text-white/50 text-sm italic">{t.person_ids.map(pn).join(", ") || "—"}</div>
+              {wf && (
+                <>
+                  <div className="grid grid-cols-2 gap-2 mt-1">
+                    <AdminCell label="Vorbereitet" value={formatTime(wf.prepared_at)} color={wf.prepared_at ? EVENT_COLOR.vorbereiten : undefined} />
+                    <AdminCell label="Gestartet" value={formatTime(wf.started_at)} color={wf.started_at ? EVENT_COLOR.starten : undefined} />
+                    <AdminCell label="Beendet" value={formatTime(wf.finished_at)} color={wf.finished_at ? EVENT_COLOR.beenden : undefined} />
+                    <AdminCell label="Pause-Anzahl" value={String((wf.events || []).filter(e => e.type === 'pause').length)} color={EVENT_COLOR.pause} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-lg px-3 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
+                      <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">Gesamt</div>
+                      <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}</div>
+                    </div>
+                    <div className="rounded-lg px-3 py-2 border" style={{ borderColor: EVENT_COLOR.pause + "55", backgroundColor: EVENT_COLOR.pause + "12" }}>
+                      <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">Pause-Zeit</div>
+                      <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: EVENT_COLOR.pause }}>{formatDuration(pauseMs)}</div>
+                    </div>
+                  </div>
+                  <EventHistoryList events={wf.events || []} dark={true} />
+                </>
+              )}
             </div>
-            {t.description && <div className="text-sm">{t.description}</div>}
-            <div className="text-white/50 text-sm italic">{t.person_ids.map(pn).join(", ") || "—"}</div>
-            {t.accepted_at && <div className="text-brand-green text-xs font-semibold">✓ Angenommen: {fmt(t.accepted_at)}</div>}
-            {t.finished_at && <div className="text-brand-green text-xs font-semibold">✓ Erledigt: {fmt(t.finished_at)}</div>}
-            {t.accept_reason && <div className="text-brand-orange text-xs italic">↳ Nicht annehmbar: {t.accept_reason}</div>}
-            {t.not_finished_reason && <div className="text-brand-orange text-xs italic">↳ Nicht beendbar: {t.not_finished_reason}</div>}
-            {t.not_done_reason && <div className="text-brand-orange text-xs italic">↳ Nicht erledigt: {t.not_done_reason}</div>}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
   return (
-    <div className="min-h-full">
+    <div className="min-h-full flex flex-col">
       <div className="flex items-center justify-between p-4 border-b border-surface-border">
         <button onClick={() => nav(-1)}><Icon d={ICONS.back} size={28} /></button>
         <div className="font-black tracking-[3px] text-sm">ARCHIV</div>
         <div className="w-7" />
       </div>
-      <div className="p-4 space-y-2">
+      <div className="p-4 space-y-2 flex-1">
         {dates.length === 0 && <div className="text-white/50 text-center mt-16">Noch keine archivierten Tage</div>}
         {dates.map((d) => (
           <button key={d} onClick={() => loadDate(d)} className="w-full bg-surface-card border border-surface-border px-4 py-4 flex items-center gap-3 rounded-xl">
@@ -568,6 +665,15 @@ function AdminArchive() {
           </button>
         ))}
       </div>
+      {dates.length > 0 && (
+        <button
+          onClick={resetArchive}
+          disabled={resetting}
+          className="m-4 mt-0 h-14 border-2 border-brand-red bg-red-500/10 text-brand-red rounded-xl font-black tracking-[2px] flex items-center justify-center gap-2 active:opacity-70 disabled:opacity-50"
+        >
+          <Icon d={ICONS.trash} size={18} color="#FF3B30" /> {resetting ? "..." : "ARCHIV ZURÜCKSETZEN"}
+        </button>
+      )}
     </div>
   );
 }
@@ -624,21 +730,28 @@ function AdminSettings() {
       </div>
       <div className="p-4 space-y-7">
         <div>
-          <div className="section-label mb-3">Admin Name</div>
+          <div className="section-label mb-2">Admin Name</div>
+          <div className="text-white/50 text-xs mb-3">Erscheint auf Startseite, Login und Admin-Header (max. 20 Zeichen)</div>
           <div className="flex gap-2">
             <input
               type="text"
               value={adminNameInput}
-              onChange={(e) => setAdminNameInput(e.target.value)}
+              onChange={(e) => setAdminNameInput(e.target.value.slice(0, 20))}
               onKeyDown={(e) => { if (e.key === "Enter") saveName(); }}
-              placeholder="Admin"
-              maxLength={24}
-              className="input-base flex-1"
+              placeholder="z. B. Chef, Roberto, Bahaa"
+              maxLength={20}
+              autoComplete="off"
+              autoCapitalize="words"
+              spellCheck={false}
+              className="flex-1 h-12 px-4 bg-black/40 border-2 border-white/15 rounded-xl text-white text-base placeholder:text-white/30 outline-none focus:border-brand-yellow caret-brand-yellow transition"
             />
             <button onClick={saveName} className="btn-primary px-5 h-12 whitespace-nowrap">SPEICHERN</button>
           </div>
-          {nameSaved && <div className="mt-2 text-brand-green text-xs font-bold flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-brand-green" /> Gespeichert · Anzeige aktualisiert</div>}
-          <div className="mt-2 text-white/50 text-xs">Aktuell: <span className="font-bold text-brand-yellow">{currentName}</span> · Erscheint auf Startseite, Login und Admin-Header.</div>
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <span className="text-white/50 text-xs">Aktuell:</span>
+            <span className="text-brand-yellow font-bold truncate max-w-[200px]">{currentName}</span>
+            {nameSaved && <span className="text-brand-green text-xs font-bold flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-brand-green" /> Gespeichert</span>}
+          </div>
         </div>
         <div>
           <div className="section-label mb-3">Logo</div>

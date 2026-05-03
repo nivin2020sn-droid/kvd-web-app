@@ -200,6 +200,18 @@ router.post('/tasks', requireAdmin, async (req, res) => {
   res.json(obj);
 });
 
+// Update (Bearbeiten)
+router.put('/tasks/:id', requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const allowed = ['task_type', 'haus', 'station', 'description', 'person_ids', 'time_from', 'time_to'];
+  const update = {};
+  for (const k of allowed) if (b[k] !== undefined) update[k] = b[k];
+  const r = await TaskModel.findOneAndUpdate({ id: req.params.id }, { $set: update }, { new: true, projection: { _id: 0 } }).lean();
+  if (!r) return res.status(404).json({ detail: 'Task not found' });
+  broadcast({ type: 'tasks_updated' });
+  res.json(r);
+});
+
 router.patch('/tasks/:id/status', async (req, res) => {
   const valid = new Set(['pending', 'accepted', 'finished', 'cannot_accept', 'not_finished', 'not_done']);
   const status = req.body?.status;
@@ -218,9 +230,25 @@ router.patch('/tasks/:id/status', async (req, res) => {
 });
 
 router.delete('/tasks/:id', requireAdmin, async (req, res) => {
+  const permanent = req.query.permanent === '1' || req.query.permanent === 'true';
+  if (permanent) {
+    await TaskModel.deleteOne({ id: req.params.id });
+    await WorkflowModel.deleteOne({ task_id: req.params.id });
+    broadcast({ type: 'tasks_updated' });
+    return res.json({ ok: true, deleted: true });
+  }
   await TaskModel.updateOne({ id: req.params.id }, { $set: { archived: true, archive_date: todayStr() } });
   broadcast({ type: 'tasks_updated' });
-  res.json({ ok: true });
+  res.json({ ok: true, archived: true });
+});
+
+// Reset archive – löscht NUR archivierte Aufgaben + zugehörige Workflows
+router.delete('/tasks/archive/all', requireAdmin, async (req, res) => {
+  const archivedIds = (await TaskModel.find({ archived: true }, { id: 1, _id: 0 }).lean()).map((t) => t.id);
+  const delT = await TaskModel.deleteMany({ archived: true });
+  const delW = archivedIds.length ? await WorkflowModel.deleteMany({ task_id: { $in: archivedIds } }) : { deletedCount: 0 };
+  broadcast({ type: 'tasks_updated' });
+  res.json({ ok: true, deleted_tasks: delT.deletedCount, deleted_workflows: delW.deletedCount });
 });
 
 router.post('/tasks/archive-now', requireAdmin, async (req, res) => {

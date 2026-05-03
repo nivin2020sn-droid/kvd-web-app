@@ -89,10 +89,53 @@ export async function localHandler<T = any>(path: string, method: string, body?:
     setList(K.tasks, list); return { ok: true } as any;
   }
   const taskIdMatch = pathOnly.match(/^\/tasks\/([^/]+)$/);
+  if (taskIdMatch && method === "PUT") {
+    const list = getList<Task>(K.tasks);
+    const idx = list.findIndex((x) => x.id === taskIdMatch[1]);
+    if (idx < 0) throw new Error("Task not found");
+    const allowed = ["task_type", "haus", "station", "description", "person_ids", "time_from", "time_to"];
+    const updated = { ...list[idx] } as any;
+    for (const k of allowed) if (body?.[k] !== undefined) updated[k] = body[k];
+    list[idx] = updated;
+    setList(K.tasks, list);
+    return updated as any;
+  }
   if (taskIdMatch && method === "DELETE") {
-    const list = getList<Task>(K.tasks); const t = list.find((x) => x.id === taskIdMatch[1]);
+    const permanent = query.get("permanent") === "1" || query.get("permanent") === "true";
+    const list = getList<Task>(K.tasks);
+    if (permanent) {
+      const filtered = list.filter((x) => x.id !== taskIdMatch[1]);
+      setList(K.tasks, filtered);
+      // also remove associated workflow
+      try {
+        const wfRaw = localStorage.getItem("task_workflow_v1");
+        if (wfRaw) {
+          const all = JSON.parse(wfRaw);
+          delete all[taskIdMatch[1]];
+          localStorage.setItem("task_workflow_v1", JSON.stringify(all));
+        }
+      } catch {}
+      return { ok: true, deleted: true } as any;
+    }
+    const t = list.find((x) => x.id === taskIdMatch[1]);
     if (t) { t.archived = true; t.archive_date = todayStr(); }
-    setList(K.tasks, list); return { ok: true } as any;
+    setList(K.tasks, list); return { ok: true, archived: true } as any;
+  }
+  if (pathOnly === "/tasks/archive/all" && method === "DELETE") {
+    const list = getList<Task>(K.tasks);
+    const archivedIds = list.filter((t) => t.archived).map((t) => t.id);
+    const remaining = list.filter((t) => !t.archived);
+    setList(K.tasks, remaining);
+    // Clean workflows for those archived tasks
+    try {
+      const wfRaw = localStorage.getItem("task_workflow_v1");
+      if (wfRaw) {
+        const all = JSON.parse(wfRaw);
+        for (const id of archivedIds) delete all[id];
+        localStorage.setItem("task_workflow_v1", JSON.stringify(all));
+      }
+    } catch {}
+    return { ok: true, deleted_tasks: archivedIds.length } as any;
   }
   if (pathOnly === "/tasks/archive-now" && method === "POST") {
     const list = getList<Task>(K.tasks); let n = 0; const today = todayStr();
