@@ -13,15 +13,17 @@ import {
   fetchAllWorkflows,
   saveWorkflow,
   totalWorkMs,
+  totalPauseMs,
   formatDuration,
   formatTime,
+  formatDateTime,
   EVENT_LABEL,
   EVENT_COLOR,
   STATUS_LABEL_DE,
   STATUS_COLOR,
   allowedActions,
 } from "./lib/workflow";
-import type { EventType, TaskWorkflow, WorkflowStatus } from "./lib/workflow";
+import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent } from "./lib/workflow";
 
 // ============ App root ============
 export default function App() {
@@ -262,21 +264,30 @@ function AdminHome() {
                 <AdminCell label="Beendet" value={formatTime(wf.finished_at)} color={wf.finished_at ? EVENT_COLOR.beenden : undefined} />
               </div>
 
-              {/* Live work timer */}
-              <div className="rounded-lg px-3 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
-                <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">{wfStatus === "finished" ? "Gesamt-Arbeitszeit" : "Arbeitszeit"}</div>
-                <div className="font-mono tabular-nums text-xl font-black" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}{isRunning && <span className="ml-2 text-[10px] tracking-widest" style={{ color: STATUS_COLOR.running }}>● LIVE</span>}</div>
+              {/* Live work timer + Pause total */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-2 rounded-lg px-3 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
+                  <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">{wfStatus === "finished" ? "Gesamt-Arbeitszeit" : "Arbeitszeit"}</div>
+                  <div className="font-mono tabular-nums text-xl font-black" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}{isRunning && <span className="ml-2 text-[10px] tracking-widest" style={{ color: STATUS_COLOR.running }}>● LIVE</span>}</div>
+                </div>
+                <div className="rounded-lg px-3 py-2 border" style={{ borderColor: EVENT_COLOR.pause + "55", backgroundColor: EVENT_COLOR.pause + "10" }}>
+                  <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">Pause-Zeit</div>
+                  <div className="font-mono tabular-nums text-xl font-black" style={{ color: EVENT_COLOR.pause }}>{formatDuration(totalPauseMs(wf, Date.now()))}</div>
+                </div>
               </div>
 
-              {/* Last note */}
+              {/* Aktuelle Notiz (last note) */}
               {wf.last_note && wf.last_event_type && (
                 <div className="border-l-2 pl-2.5" style={{ borderColor: lastEventColor }}>
                   <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: lastEventColor }}>
-                    Letzte Notiz · {EVENT_LABEL[wf.last_event_type]}
+                    Aktuelle Notiz · {EVENT_LABEL[wf.last_event_type]}
                   </div>
                   <div className="text-sm italic" style={{ color: lastEventColor }}>{wf.last_note}</div>
                 </div>
               )}
+
+              {/* Vollständiger Verlauf aller Ereignisse (chronologisch) */}
+              <EventHistoryList events={wf.events || []} dark={true} />
 
               <div className="flex justify-end items-center mt-1">
                 <button onClick={() => del(t.id)}><Icon d={ICONS.trash} size={18} color="#FF3B30" /></button>
@@ -301,6 +312,44 @@ const AdminCell = ({ label, value, color }: { label: string; value: string; colo
   </div>
 );
 
+// ============ Event History (Verlauf) ============
+function EventHistoryList({ events, dark = true, max = 50 }: { events: WorkflowEvent[]; dark?: boolean; max?: number }) {
+  if (!events || events.length === 0) return null;
+  // Sort chronologically (oldest first)
+  const sorted = [...events].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()).slice(-max);
+  return (
+    <div className="rounded-xl border p-2.5 mt-1" style={{ borderColor: dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)", backgroundColor: dark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.03)" }}>
+      <div className="flex items-center justify-between mb-1.5 px-1">
+        <div className="text-[10px] font-black tracking-[2px] uppercase opacity-60" style={{ color: dark ? "#fff" : "#000" }}>Verlauf · Notizen</div>
+        <div className="text-[10px] font-bold opacity-50" style={{ color: dark ? "#fff" : "#000" }}>{sorted.length} Einträge</div>
+      </div>
+      <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+        {sorted.map((ev, i) => {
+          const c = EVENT_COLOR[ev.type];
+          return (
+            <div key={i} className="flex gap-2.5 items-start rounded-lg p-2" style={{ backgroundColor: c + "10", borderLeft: `3px solid ${c}` }}>
+              <div className="flex-shrink-0 mt-0.5">
+                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="text-xs font-black tracking-wide" style={{ color: c }}>{EVENT_LABEL[ev.type]}</span>
+                  <span className="text-[10px] font-mono opacity-70" style={{ color: dark ? "#fff" : "#000" }}>{formatDateTime(ev.ts)}</span>
+                </div>
+                {ev.note ? (
+                  <div className="text-xs italic mt-0.5" style={{ color: c }}>„{ev.note}"</div>
+                ) : (
+                  <div className="text-[10px] italic opacity-40" style={{ color: dark ? "#fff" : "#000" }}>(keine Notiz)</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const ToolBtn = ({ onClick, icon, label, primary }: any) => (
   <button onClick={onClick} className={`flex-1 flex items-center justify-center gap-1.5 py-3 rounded-lg border text-xs font-bold tracking-wide ${primary ? "bg-brand-yellow border-brand-yellow text-black" : "bg-surface-card border-surface-border text-white"}`}>
     <Icon d={icon} size={16} color={primary ? "#000" : "#fff"} /> {label}
@@ -314,7 +363,7 @@ function AdminCreate() {
   const [st, setSt] = useState<SimpleItem[]>([]); const [pp, setPp] = useState<SimpleItem[]>([]);
   const [taskType, setTaskType] = useState(""); const [haus, setHaus] = useState(""); const [station, setStation] = useState("");
   const [desc, setDesc] = useState(""); const [pids, setPids] = useState<string[]>([]);
-  const [tFrom, setTFrom] = useState("08:00"); const [tTo, setTTo] = useState("12:00");
+  const [tFrom, setTFrom] = useState("07:00"); const [tTo, setTTo] = useState("15:30");
   const [saving, setSaving] = useState(false);
   const [addFor, setAddFor] = useState<null | { kind: string; label: string }>(null);
   const [newName, setNewName] = useState("");
@@ -820,15 +869,18 @@ function Tablet() {
                   />
                 </div>
 
-                {/* Last note */}
+                {/* Aktuelle Notiz (current/last note) */}
                 {wf.last_note && wf.last_event_type && (
                   <div className="border-l-2 pl-2.5 mt-1" style={{ borderColor: lastEventColor }}>
                     <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: lastEventColor }}>
-                      Letzte Notiz · {EVENT_LABEL[wf.last_event_type]}
+                      Aktuelle Notiz · {EVENT_LABEL[wf.last_event_type]}
                     </div>
                     <div className="text-sm italic" style={{ color: lastEventColor }}>{wf.last_note}</div>
                   </div>
                 )}
+
+                {/* Vollständiger Verlauf aller Notizen / Ereignisse */}
+                <EventHistoryList events={wf.events || []} dark={dark} max={20} />
 
                 {/* 4 fixed buttons: Vorbereiten / Starten / Pause·Fortsetzen / Beenden */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">

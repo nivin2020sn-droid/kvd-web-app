@@ -203,6 +203,35 @@ export function formatTime(iso: string | null | undefined): string {
   }
 }
 
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    const date = d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+    const time = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return `${date} · ${time}`;
+  } catch {
+    return "—";
+  }
+}
+
+/** Total time spent paused (sum of gaps between segment ends and next segment starts). */
+export function totalPauseMs(wf: TaskWorkflow, nowMs?: number): number {
+  if (!wf.segments || wf.segments.length === 0) return 0;
+  const now = nowMs ?? Date.now();
+  let total = 0;
+  for (let i = 0; i < wf.segments.length - 1; i++) {
+    const cur = wf.segments[i];
+    const nxt = wf.segments[i + 1];
+    if (cur.end && nxt.start) total += new Date(nxt.start).getTime() - new Date(cur.end).getTime();
+  }
+  // currently paused → add open pause duration
+  if (wf.status === "paused" && wf.paused_at) {
+    total += Math.max(0, now - new Date(wf.paused_at).getTime());
+  }
+  return total;
+}
+
 // ---------- UI helpers ----------
 export const EVENT_LABEL: Record<EventType, string> = {
   vorbereiten: "Vorbereiten",
