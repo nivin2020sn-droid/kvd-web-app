@@ -15,6 +15,16 @@ export const DEFAULT_SERVER = {
 };
 
 let cached: ServerConfig | null = null;
+let cacheInitialized = false;
+
+function ensureCacheLoaded() {
+  if (cacheInitialized) return;
+  cacheInitialized = true;
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) cached = JSON.parse(raw);
+  } catch { cached = null; }
+}
 
 function derive(base: string, apiKey?: string): ServerConfig {
   const trimmed = base.trim().replace(/\/+$/, "");
@@ -24,15 +34,14 @@ function derive(base: string, apiKey?: string): ServerConfig {
 }
 
 export function loadServerConfig(): ServerConfig | null {
-  if (cached !== null) return cached;
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) cached = JSON.parse(raw);
-  } catch { cached = null; }
+  ensureCacheLoaded();
   return cached;
 }
 
-export function getServerConfigSync(): ServerConfig | null { return cached; }
+export function getServerConfigSync(): ServerConfig | null {
+  ensureCacheLoaded();
+  return cached;
+}
 
 export function saveServerConfig(baseUrl: string, apiKey?: string): ServerConfig | null {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");

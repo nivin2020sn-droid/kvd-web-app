@@ -10,6 +10,8 @@ import type { SimpleItem, Task, AppSettings, TaskStatus } from "./lib/types";
 import {
   getWorkflow,
   recordEvent,
+  fetchAllWorkflows,
+  saveWorkflow,
   totalWorkMs,
   formatDuration,
   formatTime,
@@ -160,18 +162,40 @@ function AdminHome() {
   const nav = useNavigate();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [persons, setPersons] = useState<SimpleItem[]>([]);
+  const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
   const [loading, setLoading] = useState(true);
+  const [tick, setTick] = useState(0);
   const [online, setOnline] = useState(!!getServerConfigSync());
 
   useEffect(() => { const u = subscribeServerConfig((c) => setOnline(!!c)); return () => { u(); }; }, []);
   const load = async () => {
     try {
-      const [t, p] = await Promise.all([api<Task[]>("/tasks/today"), api<SimpleItem[]>("/persons")]);
-      setTasks(t); setPersons(p);
+      const [t, p, wfMap] = await Promise.all([
+        api<Task[]>("/tasks/today"),
+        api<SimpleItem[]>("/persons"),
+        fetchAllWorkflows(),
+      ]);
+      setTasks(t); setPersons(p); setWorkflows(wfMap);
     } catch {} finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
-  useWebSocket((m) => { if (m?.type === "tasks_updated" || m?.type === "persons_updated") load(); });
+  useEffect(() => {
+    load();
+    const tk = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(tk);
+  }, []);
+  useWebSocket((m) => {
+    if (m?.type === "workflow_updated" && m.workflow?.task_id) {
+      const wf = m.workflow as TaskWorkflow & { deleted?: boolean };
+      if (wf.deleted) {
+        setWorkflows((prev) => { const next = { ...prev }; delete next[wf.task_id]; return next; });
+      } else {
+        saveWorkflow(wf);
+        setWorkflows((prev) => ({ ...prev, [wf.task_id]: wf }));
+      }
+      return;
+    }
+    if (m?.type === "tasks_updated" || m?.type === "persons_updated") load();
+  });
 
   const personName = (id: string) => persons.find((p) => p.id === id)?.name || "—";
   const logout = () => { setToken(null); nav("/"); };
@@ -183,7 +207,7 @@ function AdminHome() {
     if (!confirm("Aufgabe entfernen? Sie wird sofort archiviert.")) return;
     try { await api(`/tasks/${id}`, { method: "DELETE", auth: true }); load(); } catch {}
   };
-  const fmt = (iso: string) => new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  void tick;
 
   return (
     <div className="min-h-full flex flex-col">
@@ -193,7 +217,7 @@ function AdminHome() {
       </div>
       <div className={`mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-full border bg-surface-card ${online ? "border-brand-green" : "border-brand-orange"}`}>
         <span className={`w-2 h-2 rounded-full ${online ? "bg-brand-green" : "bg-brand-orange"}`} />
-        <span className="flex-1 text-xs font-bold">{online ? "Online · Server verbunden" : "Offline-Modus · Lokale Daten"}</span>
+        <span className="flex-1 text-xs font-bold">{online ? "Online · Live-Updates aktiv" : "Offline-Modus · Lokale Daten"}</span>
         <button onClick={() => nav("/admin/server")} className="border border-surface-border px-2.5 py-1 rounded-md text-xs font-bold">Server</button>
       </div>
       <div className="flex gap-2 px-3 pb-3 border-b border-surface-border">
@@ -209,31 +233,57 @@ function AdminHome() {
             <div className="text-lg font-bold text-white">Keine Aufgaben heute</div>
             <div className="text-sm">Tippen Sie auf NEU, um eine Aufgabe hinzuzufügen.</div>
           </div>
-        ) : tasks.map((t) => (
-          <div key={t.id} className="bg-surface-card border border-surface-border p-3.5 space-y-1.5 rounded-xl">
-            <div className="flex gap-2 items-start">
-              <div className="flex-1">
-                <div className="text-[17px] font-extrabold">{t.task_type}</div>
-                <div className="text-white/50 text-xs tracking-wider mt-0.5">Haus {t.haus} · Station {t.station}</div>
+        ) : tasks.map((t) => {
+          const wf = workflows[t.id] || getWorkflow(t.id);
+          const wfStatus: WorkflowStatus = wf.status;
+          const isRunning = wfStatus === "running";
+          const totalMs = totalWorkMs(wf, isRunning ? Date.now() : undefined);
+          const lastEventColor = wf.last_event_type ? EVENT_COLOR[wf.last_event_type] : "#9CA3AF";
+          return (
+            <div key={t.id} className="bg-surface-card border border-surface-border p-3.5 space-y-2 rounded-xl">
+              <div className="flex gap-2 items-start">
+                <div className="flex-1">
+                  <div className="text-[17px] font-extrabold">{t.task_type}</div>
+                  <div className="text-white/50 text-xs tracking-wider mt-0.5">Haus {t.haus} · Station {t.station} · {t.time_from}–{t.time_to}</div>
+                </div>
+                <div className="flex items-center gap-1.5 border rounded-full px-2.5 py-1" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "15" }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
+                  <span className="text-[10px] font-bold tracking-wide" style={{ color: STATUS_COLOR[wfStatus] }}>{STATUS_LABEL_DE[wfStatus]}</span>
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 border rounded-full px-2.5 py-1" style={{ borderColor: STATUS_DOT[t.status] + "55", backgroundColor: STATUS_DOT[t.status] + "15" }}>
-                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_DOT[t.status] }} />
-                <span className="text-[10px] font-bold tracking-wide">{STATUS_LABEL[t.status]}</span>
+              {t.description && <div className="text-sm">{t.description}</div>}
+              <div className="text-white/50 text-xs italic">{t.person_ids.map(personName).join(", ") || "Keine Personen"}</div>
+
+              {/* Workflow info grid – live updates */}
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <AdminCell label="Vorbereitet" value={formatTime(wf.prepared_at)} color={wf.prepared_at ? EVENT_COLOR.vorbereiten : undefined} />
+                <AdminCell label="Gestartet" value={formatTime(wf.started_at)} color={wf.started_at ? EVENT_COLOR.starten : undefined} />
+                <AdminCell label="Pause seit" value={wfStatus === "paused" ? formatTime(wf.paused_at) : "—"} color={wfStatus === "paused" ? EVENT_COLOR.pause : undefined} />
+                <AdminCell label="Beendet" value={formatTime(wf.finished_at)} color={wf.finished_at ? EVENT_COLOR.beenden : undefined} />
+              </div>
+
+              {/* Live work timer */}
+              <div className="rounded-lg px-3 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
+                <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">{wfStatus === "finished" ? "Gesamt-Arbeitszeit" : "Arbeitszeit"}</div>
+                <div className="font-mono tabular-nums text-xl font-black" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}{isRunning && <span className="ml-2 text-[10px] tracking-widest" style={{ color: STATUS_COLOR.running }}>● LIVE</span>}</div>
+              </div>
+
+              {/* Last note */}
+              {wf.last_note && wf.last_event_type && (
+                <div className="border-l-2 pl-2.5" style={{ borderColor: lastEventColor }}>
+                  <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: lastEventColor }}>
+                    Letzte Notiz · {EVENT_LABEL[wf.last_event_type]}
+                  </div>
+                  <div className="text-sm italic" style={{ color: lastEventColor }}>{wf.last_note}</div>
+                </div>
+              )}
+
+              <div className="flex justify-end items-center mt-1">
+                <button onClick={() => del(t.id)}><Icon d={ICONS.trash} size={18} color="#FF3B30" /></button>
               </div>
             </div>
-            {t.description && <div className="text-sm">{t.description}</div>}
-            <div className="text-white/50 text-sm italic">{t.person_ids.map(personName).join(", ") || "Keine Personen"}</div>
-            <div className="flex justify-between items-center mt-1">
-              <div className="text-brand-yellow font-bold text-sm">{t.time_from} – {t.time_to}</div>
-              <button onClick={() => del(t.id)}><Icon d={ICONS.trash} size={18} color="#FF3B30" /></button>
-            </div>
-            {t.accepted_at && <div className="text-brand-green text-xs font-semibold">✓ Angenommen: {fmt(t.accepted_at)}</div>}
-            {t.finished_at && <div className="text-brand-green text-xs font-semibold">✓ Erledigt: {fmt(t.finished_at)}</div>}
-            {t.accept_reason && <div className="text-brand-orange text-xs italic">↳ Nicht annehmbar: {t.accept_reason}</div>}
-            {t.not_finished_reason && <div className="text-brand-orange text-xs italic">↳ Nicht beendbar: {t.not_finished_reason}</div>}
-            {t.not_done_reason && <div className="text-brand-orange text-xs italic">↳ Nicht erledigt: {t.not_done_reason}</div>}
-          </div>
-        ))}
+          );
+        })}
       </div>
       {tasks.length > 0 && (
         <button onClick={archiveAll} className="m-4 mt-0 bg-brand-yellow text-black font-black tracking-[2px] h-14 flex items-center justify-center gap-2 rounded-xl">
@@ -243,6 +293,13 @@ function AdminHome() {
     </div>
   );
 }
+
+const AdminCell = ({ label, value, color }: { label: string; value: string; color?: string }) => (
+  <div className="rounded-lg px-2.5 py-1.5 border" style={{ borderColor: color ? color + "55" : "rgba(255,255,255,0.08)", backgroundColor: color ? color + "10" : "rgba(255,255,255,0.04)" }}>
+    <div className="text-[10px] font-bold tracking-widest uppercase opacity-60">{label}</div>
+    <div className="text-sm font-bold" style={{ color: color || "#fff" }}>{value}</div>
+  </div>
+);
 
 const ToolBtn = ({ onClick, icon, label, primary }: any) => (
   <button onClick={onClick} className={`flex-1 flex items-center justify-center gap-1.5 py-3 rounded-lg border text-xs font-bold tracking-wide ${primary ? "bg-brand-yellow border-brand-yellow text-black" : "bg-surface-card border-surface-border text-white"}`}>
@@ -641,12 +698,14 @@ function Tablet() {
   useEffect(() => { const u = subscribeServerConfig((c) => setOnline(!!c)); return () => { u(); }; }, []);
   const load = async () => {
     try {
-      const [t, p, st] = await Promise.all([api<Task[]>("/tasks/today"), api<SimpleItem[]>("/persons"), api<AppSettings>("/settings")]);
+      const [t, p, st, wfMap] = await Promise.all([
+        api<Task[]>("/tasks/today"),
+        api<SimpleItem[]>("/persons"),
+        api<AppSettings>("/settings"),
+        fetchAllWorkflows(),
+      ]);
       setTasks(t); setPersons(p); setS(st);
-      // Load workflows for all visible tasks
-      const wfs: Record<string, TaskWorkflow> = {};
-      for (const tk of t) wfs[tk.id] = getWorkflow(tk.id);
-      setWorkflows(wfs);
+      setWorkflows(wfMap);
     } catch {} finally { setLoading(false); }
   };
   useEffect(() => {
@@ -655,7 +714,19 @@ function Tablet() {
     const tk = setInterval(() => setTick((x) => x + 1), 1000); // live timer
     return () => { clearInterval(it); clearInterval(tk); };
   }, []);
-  useWebSocket((m) => { if (m?.type === "tasks_updated" || m?.type === "persons_updated" || m?.type === "settings_updated") load(); });
+  useWebSocket((m) => {
+    if (m?.type === "workflow_updated" && m.workflow?.task_id) {
+      const wf = m.workflow as TaskWorkflow & { deleted?: boolean };
+      if (wf.deleted) {
+        setWorkflows((prev) => { const next = { ...prev }; delete next[wf.task_id]; return next; });
+      } else {
+        saveWorkflow(wf);
+        setWorkflows((prev) => ({ ...prev, [wf.task_id]: wf }));
+      }
+      return;
+    }
+    if (m?.type === "tasks_updated" || m?.type === "persons_updated" || m?.type === "settings_updated") load();
+  });
 
   const pn = (id: string) => persons.find((x) => x.id === id)?.name || "—";
 
@@ -664,11 +735,13 @@ function Tablet() {
     setNote("");
   };
 
-  const confirmAction = () => {
+  const confirmAction = async () => {
     if (!modal) return;
-    const wf = recordEvent(modal.taskId, modal.type, note.trim(), modal.taskName);
-    setWorkflows((prev) => ({ ...prev, [modal.taskId]: wf }));
+    const m = modal;
+    const noteVal = note.trim();
     setModal(null); setNote("");
+    const wf = await recordEvent(m.taskId, m.type, noteVal, m.taskName);
+    setWorkflows((prev) => ({ ...prev, [m.taskId]: wf }));
   };
 
   const bgType = s?.background_type || "preset"; const bgVal = s?.background_value || "dark";

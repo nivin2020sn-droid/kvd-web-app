@@ -1,5 +1,9 @@
 // Workflow logic for tasks: prepared → running → paused → running → finished
-// Stored locally in localStorage, independent of the server task status.
+// Hybrid storage: when server is configured, syncs via REST + WebSocket.
+// Falls back to localStorage when offline.
+
+import { api } from "./api";
+import { loadServerConfig } from "./serverConfig";
 
 export type WorkflowStatus = "idle" | "prepared" | "running" | "paused" | "finished";
 export type EventType = "vorbereiten" | "starten" | "pause" | "fortsetzen" | "beenden";
@@ -64,8 +68,8 @@ export function deleteWorkflow(task_id: string) {
   saveAll(all);
 }
 
-/** Apply an event to the workflow, returns the updated workflow. */
-export function recordEvent(
+/** Apply an event locally to the workflow. Returns updated workflow. */
+function applyEventLocal(
   task_id: string,
   type: EventType,
   note: string,
@@ -124,6 +128,50 @@ export function recordEvent(
   });
   saveWorkflow(wf);
   return wf;
+}
+
+/** Apply an event. Online → POST to server (server broadcasts via WS). Offline → local only. */
+export async function recordEvent(
+  task_id: string,
+  type: EventType,
+  note: string,
+  task_name: string,
+): Promise<TaskWorkflow> {
+  // Optimistic local update for instant UI feedback
+  const optimistic = applyEventLocal(task_id, type, note, task_name);
+  if (loadServerConfig()) {
+    try {
+      const serverWf = await api<TaskWorkflow>(`/workflows/${task_id}/event`, {
+        method: "POST",
+        body: { type, note, task_name },
+      });
+      // Server is source of truth – save its result, replacing optimistic state
+      saveWorkflow(serverWf);
+      return serverWf;
+    } catch {
+      // Network error – keep optimistic local state (works offline)
+      return optimistic;
+    }
+  }
+  return optimistic;
+}
+
+/** Fetch all workflows from server (when online), else from localStorage. */
+export async function fetchAllWorkflows(): Promise<Record<string, TaskWorkflow>> {
+  if (loadServerConfig()) {
+    try {
+      const list = await api<TaskWorkflow[]>("/workflows");
+      const map: Record<string, TaskWorkflow> = {};
+      for (const wf of list || []) {
+        if (wf?.task_id) map[wf.task_id] = wf;
+      }
+      saveAll(map);
+      return map;
+    } catch {
+      // fallback to local cache
+    }
+  }
+  return loadAll();
 }
 
 /** Total accumulated work time in milliseconds (only running segments, excluding pauses). */

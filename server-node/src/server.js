@@ -61,6 +61,20 @@ const SettingsSchema = new mongoose.Schema({
 }, { versionKey: false, _id: false });
 const SettingsModel = mongoose.model('Settings', SettingsSchema, 'settings');
 
+const WorkflowSchema = new mongoose.Schema({
+  task_id: { type: String, unique: true, index: true },
+  status: { type: String, default: 'idle' },
+  events: { type: Array, default: [] },
+  segments: { type: Array, default: [] },
+  prepared_at: { type: String, default: null },
+  started_at: { type: String, default: null },
+  paused_at: { type: String, default: null },
+  finished_at: { type: String, default: null },
+  last_note: { type: String, default: '' },
+  last_event_type: { type: String, default: null },
+}, { versionKey: false });
+const WorkflowModel = mongoose.model('Workflow', WorkflowSchema, 'workflows');
+
 // ===== Helpers =====
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const nowIso = () => new Date().toISOString();
@@ -227,6 +241,105 @@ router.get('/tasks/archive', async (req, res) => {
 
 router.get('/update-info', (req, res) => {
   res.json({ latest_version: '1.0.0', download_url: '', changelog: '', mandatory: false });
+});
+
+// ===== Workflow (Tablet → Admin live sync) =====
+const VALID_EVENTS = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden']);
+
+function applyWorkflowEvent(wf, type, note, taskName) {
+  const before = wf.status || 'idle';
+  const now = new Date().toISOString();
+  let after = before;
+
+  switch (type) {
+    case 'vorbereiten':
+      after = 'prepared';
+      wf.prepared_at = now;
+      break;
+    case 'starten': {
+      after = 'running';
+      if (!wf.started_at) wf.started_at = now;
+      wf.paused_at = null;
+      wf.segments = wf.segments || [];
+      wf.segments.push({ start: now, end: null });
+      break;
+    }
+    case 'pause': {
+      after = 'paused';
+      const last = wf.segments?.[wf.segments.length - 1];
+      if (last && !last.end) last.end = now;
+      wf.paused_at = now;
+      break;
+    }
+    case 'fortsetzen': {
+      after = 'running';
+      wf.segments = wf.segments || [];
+      wf.segments.push({ start: now, end: null });
+      wf.paused_at = null;
+      break;
+    }
+    case 'beenden': {
+      after = 'finished';
+      wf.finished_at = now;
+      const last = wf.segments?.[wf.segments.length - 1];
+      if (last && !last.end) last.end = now;
+      wf.paused_at = null;
+      break;
+    }
+  }
+  wf.status = after;
+  wf.last_note = note || '';
+  wf.last_event_type = type;
+  wf.events = wf.events || [];
+  wf.events.push({
+    type, ts: now, note: note || '',
+    status_before: before, status_after: after, task_name: taskName || '',
+  });
+  return wf;
+}
+
+// GET all workflows (for Admin / Tablet on initial load)
+router.get('/workflows', async (req, res) => {
+  const list = await WorkflowModel.find({}, { _id: 0 }).lean();
+  res.json(list);
+});
+
+// GET single workflow
+router.get('/workflows/:task_id', async (req, res) => {
+  const wf = await WorkflowModel.findOne({ task_id: req.params.task_id }, { _id: 0 }).lean();
+  if (!wf) return res.json({
+    task_id: req.params.task_id, status: 'idle', events: [], segments: [],
+    prepared_at: null, started_at: null, paused_at: null, finished_at: null,
+    last_note: '', last_event_type: null,
+  });
+  res.json(wf);
+});
+
+// POST event → apply, persist, broadcast
+router.post('/workflows/:task_id/event', async (req, res) => {
+  const { type, note, task_name } = req.body || {};
+  if (!VALID_EVENTS.has(type)) return res.status(400).json({ detail: 'Invalid event type' });
+  const existing = await WorkflowModel.findOne({ task_id: req.params.task_id }, { _id: 0 }).lean();
+  const base = existing || {
+    task_id: req.params.task_id, status: 'idle', events: [], segments: [],
+    prepared_at: null, started_at: null, paused_at: null, finished_at: null,
+    last_note: '', last_event_type: null,
+  };
+  const updated = applyWorkflowEvent({ ...base }, type, note, task_name);
+  await WorkflowModel.findOneAndUpdate(
+    { task_id: req.params.task_id },
+    { $set: updated },
+    { upsert: true, new: true },
+  );
+  broadcast({ type: 'workflow_updated', workflow: updated });
+  res.json(updated);
+});
+
+// DELETE workflow (when admin deletes a task we can clean it up)
+router.delete('/workflows/:task_id', requireAdmin, async (req, res) => {
+  await WorkflowModel.deleteOne({ task_id: req.params.task_id });
+  broadcast({ type: 'workflow_updated', workflow: { task_id: req.params.task_id, deleted: true } });
+  res.json({ ok: true });
 });
 
 // Mount router under /api
