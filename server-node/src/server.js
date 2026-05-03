@@ -7,6 +7,7 @@ import http from 'http';
 import cron from 'node-cron';
 import { v4 as uuidv4 } from 'uuid';
 
+// ===== ENV =====
 const PORT = process.env.PORT || 8080;
 const MONGO_URL = process.env.MONGO_URL;
 const DB_NAME = process.env.DB_NAME || 'reinigung';
@@ -73,13 +74,11 @@ async function getSettings() {
   return doc;
 }
 
-function publicSettings(s) {
-  return {
-    logo_base64: s.logo_base64 || null,
-    background_type: s.background_type || 'preset',
-    background_value: s.background_value || 'dark',
-  };
-}
+const publicSettings = (s) => ({
+  logo_base64: s.logo_base64 || null,
+  background_type: s.background_type || 'preset',
+  background_value: s.background_value || 'dark',
+});
 
 function requireAdmin(req, res, next) {
   const auth = req.headers.authorization || '';
@@ -96,24 +95,28 @@ const KIND_MODEL = {
 
 // ===== App =====
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors());                              // CORS für alle Origins erlauben
 app.use(express.json({ limit: '10mb' }));
 
-// Health
-app.get('/api/health', async (req, res) => {
-  res.json({
-    status: 'ok',
-    message: 'Reinigung Backend läuft',
-    time: nowIso(),
-    db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-  });
+// Fallback root route
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Server running' });
 });
 
-app.get('/api', (req, res) => res.json({ message: 'Reinigung Aufgabenverwaltung API' }));
-app.get('/', (req, res) => res.json({ message: 'Reinigung Aufgabenverwaltung API' }));
+// ===== API Router =====
+const router = express.Router();
+
+// Health
+router.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+router.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Reinigung API' });
+});
 
 // Login
-app.post('/api/admin/login', async (req, res) => {
+router.post('/admin/login', async (req, res) => {
   const { password } = req.body || {};
   const s = await getSettings();
   if (password === (s.password || DEFAULT_PASSWORD)) return res.json({ token: ADMIN_TOKEN });
@@ -121,10 +124,10 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 // Settings
-app.get('/api/settings', async (req, res) => {
+router.get('/settings', async (req, res) => {
   res.json(publicSettings(await getSettings()));
 });
-app.put('/api/settings', requireAdmin, async (req, res) => {
+router.put('/settings', requireAdmin, async (req, res) => {
   const allowed = ['password', 'logo_base64', 'background_type', 'background_value'];
   const update = {};
   for (const k of allowed) if (req.body[k] !== undefined) update[k] = req.body[k];
@@ -135,35 +138,33 @@ app.put('/api/settings', requireAdmin, async (req, res) => {
 });
 
 // CRUD: simple lists
-function kindRoutes(kind) {
+function mountKind(kind) {
   const Model = KIND_MODEL[kind];
-  app.get(`/api/${kind}`, async (req, res) => {
-    const list = await Model.find({}, { _id: 0 }).lean();
-    res.json(list);
+  router.get(`/${kind}`, async (req, res) => {
+    res.json(await Model.find({}, { _id: 0 }).lean());
   });
-  app.post(`/api/${kind}`, requireAdmin, async (req, res) => {
+  router.post(`/${kind}`, requireAdmin, async (req, res) => {
     const name = (req.body?.name || '').trim();
     if (!name) return res.status(400).json({ detail: 'Name required' });
     const doc = await Model.create({ id: uuidv4(), name });
     broadcast({ type: `${kind}_updated` });
     res.json({ id: doc.id, name: doc.name });
   });
-  app.delete(`/api/${kind}/:id`, requireAdmin, async (req, res) => {
+  router.delete(`/${kind}/:id`, requireAdmin, async (req, res) => {
     await Model.deleteOne({ id: req.params.id });
     broadcast({ type: `${kind}_updated` });
     res.json({ ok: true });
   });
 }
-for (const kind of Object.keys(KIND_MODEL)) kindRoutes(kind);
+for (const kind of Object.keys(KIND_MODEL)) mountKind(kind);
 
 // Tasks
-app.get('/api/tasks/today', async (req, res) => {
+router.get('/tasks/today', async (req, res) => {
   const today = todayStr();
-  const tasks = await TaskModel.find({ archived: false, task_date: today }, { _id: 0 }).lean();
-  res.json(tasks);
+  res.json(await TaskModel.find({ archived: false, task_date: today }, { _id: 0 }).lean());
 });
 
-app.post('/api/tasks', requireAdmin, async (req, res) => {
+router.post('/tasks', requireAdmin, async (req, res) => {
   const b = req.body || {};
   if (!b.task_type || !b.haus || !b.station || !b.time_from || !b.time_to) {
     return res.status(400).json({ detail: 'Fehlende Pflichtfelder' });
@@ -185,7 +186,7 @@ app.post('/api/tasks', requireAdmin, async (req, res) => {
   res.json(obj);
 });
 
-app.patch('/api/tasks/:id/status', async (req, res) => {
+router.patch('/tasks/:id/status', async (req, res) => {
   const valid = new Set(['pending', 'accepted', 'finished', 'cannot_accept', 'not_finished', 'not_done']);
   const status = req.body?.status;
   const reason = req.body?.reason || '';
@@ -202,35 +203,36 @@ app.patch('/api/tasks/:id/status', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/tasks/:id', requireAdmin, async (req, res) => {
+router.delete('/tasks/:id', requireAdmin, async (req, res) => {
   await TaskModel.updateOne({ id: req.params.id }, { $set: { archived: true, archive_date: todayStr() } });
   broadcast({ type: 'tasks_updated' });
   res.json({ ok: true });
 });
 
-app.post('/api/tasks/archive-now', requireAdmin, async (req, res) => {
+router.post('/tasks/archive-now', requireAdmin, async (req, res) => {
   const r = await TaskModel.updateMany({ archived: false }, { $set: { archived: true, archive_date: todayStr() } });
   broadcast({ type: 'tasks_updated' });
   res.json({ archived: r.modifiedCount });
 });
 
-app.get('/api/tasks/archive', async (req, res) => {
+router.get('/tasks/archive', async (req, res) => {
   const date = req.query.date;
   if (date) {
     const tasks = await TaskModel.find({ archived: true, archive_date: date }, { _id: 0 }).lean();
     return res.json({ date, tasks });
   }
   const dates = await TaskModel.distinct('archive_date', { archived: true });
-  const sorted = dates.filter(Boolean).sort().reverse();
-  res.json({ dates: sorted, tasks: [] });
+  res.json({ dates: dates.filter(Boolean).sort().reverse(), tasks: [] });
 });
 
-// Update info
-app.get('/api/update-info', (req, res) => {
+router.get('/update-info', (req, res) => {
   res.json({ latest_version: '1.0.0', download_url: '', changelog: '', mandatory: false });
 });
 
-// 404 handler – behält JSON-Format
+// Mount router under /api
+app.use('/api', router);
+
+// 404 handler
 app.use((req, res) => res.status(404).json({ detail: 'Route not found', path: req.path }));
 
 // ===== HTTP + WebSocket =====
@@ -247,7 +249,7 @@ function broadcast(message) {
 }
 
 wss.on('connection', (ws) => {
-  ws.on('message', () => { /* keep alive – Clients senden nichts */ });
+  ws.on('message', () => { /* keep alive */ });
   ws.on('error', () => { try { ws.close(); } catch {} });
 });
 
