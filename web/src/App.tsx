@@ -7,6 +7,19 @@ import { loadServerConfig, saveServerConfig, clearServerConfig, getServerConfigS
 import { initLocalStore } from "./lib/localStore";
 import { STATUS_LABEL, STATUS_DOT, PRESET_BG, isDarkBg, APP_VERSION } from "./lib/types";
 import type { SimpleItem, Task, AppSettings, TaskStatus } from "./lib/types";
+import {
+  getWorkflow,
+  recordEvent,
+  totalWorkMs,
+  formatDuration,
+  formatTime,
+  EVENT_LABEL,
+  EVENT_COLOR,
+  STATUS_LABEL_DE,
+  STATUS_COLOR,
+  allowedActions,
+} from "./lib/workflow";
+import type { EventType, TaskWorkflow, WorkflowStatus } from "./lib/workflow";
 
 // ============ App root ============
 export default function App() {
@@ -619,25 +632,43 @@ function Tablet() {
   const [s, setS] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
-  const [modal, setModal] = useState<null | { taskId: string; status: TaskStatus; title: string }>(null);
-  const [reason, setReason] = useState("");
+  const [tick, setTick] = useState(0);  // forces re-render every second for live timer
   const [online, setOnline] = useState(!!getServerConfigSync());
+  const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
+  const [modal, setModal] = useState<null | { taskId: string; taskName: string; type: EventType }>(null);
+  const [note, setNote] = useState("");
 
   useEffect(() => { const u = subscribeServerConfig((c) => setOnline(!!c)); return () => { u(); }; }, []);
   const load = async () => {
     try {
       const [t, p, st] = await Promise.all([api<Task[]>("/tasks/today"), api<SimpleItem[]>("/persons"), api<AppSettings>("/settings")]);
       setTasks(t); setPersons(p); setS(st);
+      // Load workflows for all visible tasks
+      const wfs: Record<string, TaskWorkflow> = {};
+      for (const tk of t) wfs[tk.id] = getWorkflow(tk.id);
+      setWorkflows(wfs);
     } catch {} finally { setLoading(false); }
   };
-  useEffect(() => { load(); const it = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(it); }, []);
+  useEffect(() => {
+    load();
+    const it = setInterval(() => setNow(new Date()), 30000);
+    const tk = setInterval(() => setTick((x) => x + 1), 1000); // live timer
+    return () => { clearInterval(it); clearInterval(tk); };
+  }, []);
   useWebSocket((m) => { if (m?.type === "tasks_updated" || m?.type === "persons_updated" || m?.type === "settings_updated") load(); });
 
   const pn = (id: string) => persons.find((x) => x.id === id)?.name || "—";
-  const updateStatus = async (id: string, status: TaskStatus, reason?: string) => { try { await api(`/tasks/${id}/status`, { method: "PATCH", body: { status, reason } }); load(); } catch {} };
-  const act = (t: Task, status: TaskStatus, title: string) => {
-    if (status === "cannot_accept" || status === "not_finished" || status === "not_done") { setModal({ taskId: t.id, status, title }); setReason(""); }
-    else updateStatus(t.id, status);
+
+  const openAction = (task: Task, type: EventType) => {
+    setModal({ taskId: task.id, taskName: task.task_type, type });
+    setNote("");
+  };
+
+  const confirmAction = () => {
+    if (!modal) return;
+    const wf = recordEvent(modal.taskId, modal.type, note.trim(), modal.taskName);
+    setWorkflows((prev) => ({ ...prev, [modal.taskId]: wf }));
+    setModal(null); setNote("");
   };
 
   const bgType = s?.background_type || "preset"; const bgVal = s?.background_value || "dark";
@@ -671,59 +702,152 @@ function Tablet() {
               <div className="text-xl font-bold" style={{ color: dark ? "#fff" : "#000" }}>Keine Aufgaben heute</div>
               <div style={{ color: textMuted }}>Warten auf neue Aufgaben vom Admin</div>
             </div>
-          ) : tasks.map((t) => (
-            <div key={t.id} className="border rounded-2xl p-4 space-y-2.5 shadow-lg" style={{ backgroundColor: dark ? "rgba(15,15,18,0.88)" : "rgba(255,255,255,0.92)", borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)", color: dark ? "#fff" : "#000" }}>
-              <div className="flex items-center gap-3 flex-wrap">
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/5">
-                  <span className="font-extrabold">{t.time_from}</span>
-                  <span className="opacity-60">—</span>
-                  <span className="font-extrabold">{t.time_to}</span>
+          ) : tasks.map((t) => {
+            const wf = workflows[t.id] || getWorkflow(t.id);
+            const wfStatus: WorkflowStatus = wf.status;
+            const allowed = allowedActions(wfStatus);
+            const isRunning = wfStatus === "running";
+            const totalMs = totalWorkMs(wf, isRunning ? Date.now() : undefined);
+            // tick is referenced so re-render happens each second when running
+            void tick;
+            const lastEventColor = wf.last_event_type ? EVENT_COLOR[wf.last_event_type] : "#9CA3AF";
+            return (
+              <div key={t.id} className="border rounded-2xl p-4 space-y-2.5 shadow-lg" style={{ backgroundColor: dark ? "rgba(15,15,18,0.88)" : "rgba(255,255,255,0.92)", borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)", color: dark ? "#fff" : "#000" }}>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/5">
+                    <span className="font-extrabold">{t.time_from}</span>
+                    <span className="opacity-60">—</span>
+                    <span className="font-extrabold">{t.time_to}</span>
+                  </div>
+                  <div className="flex-1 min-w-[120px]">
+                    <div className="text-lg font-extrabold">{t.task_type}</div>
+                    <div className="text-xs font-bold tracking-widest" style={{ color: textMuted }}>HAUS {t.haus} · STATION {t.station}</div>
+                  </div>
+                  {/* Status badge (workflow) */}
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "15" }}>
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
+                    <span className="text-xs font-bold" style={{ color: STATUS_COLOR[wfStatus] }}>{STATUS_LABEL_DE[wfStatus]}</span>
+                  </div>
                 </div>
-                <div className="flex-1 min-w-[120px]">
-                  <div className="text-lg font-extrabold">{t.task_type}</div>
-                  <div className="text-xs font-bold tracking-widest" style={{ color: textMuted }}>HAUS {t.haus} · STATION {t.station}</div>
+
+                {t.description && <div className="text-sm">{t.description}</div>}
+                <div className="text-sm italic" style={{ color: textMuted }}>{t.person_ids.map(pn).join(" · ") || "—"}</div>
+
+                {/* Workflow info grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1">
+                  <InfoCell label="Start" value={formatTime(wf.started_at)} dark={dark} />
+                  <InfoCell label="Pause seit" value={wfStatus === "paused" ? formatTime(wf.paused_at) : "—"} dark={dark} highlight={wfStatus === "paused" ? "#FF9500" : undefined} />
+                  <InfoCell label="Beendet" value={formatTime(wf.finished_at)} dark={dark} highlight={wfStatus === "finished" ? "#00E676" : undefined} />
+                  <InfoCell
+                    label={wfStatus === "finished" ? "Gesamt" : "Arbeitszeit"}
+                    value={formatDuration(totalMs)}
+                    dark={dark}
+                    mono
+                    highlight={isRunning ? "#3B82F6" : wfStatus === "finished" ? "#00E676" : undefined}
+                  />
                 </div>
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border" style={{ borderColor: STATUS_DOT[t.status] + "55", backgroundColor: STATUS_DOT[t.status] + "15" }}>
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: STATUS_DOT[t.status] }} />
-                  <span className="text-xs font-bold">{STATUS_LABEL[t.status]}</span>
+
+                {/* Last note */}
+                {wf.last_note && wf.last_event_type && (
+                  <div className="border-l-2 pl-2.5 mt-1" style={{ borderColor: lastEventColor }}>
+                    <div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: lastEventColor }}>
+                      Letzte Notiz · {EVENT_LABEL[wf.last_event_type]}
+                    </div>
+                    <div className="text-sm italic" style={{ color: lastEventColor }}>{wf.last_note}</div>
+                  </div>
+                )}
+
+                {/* 4 fixed buttons: Vorbereiten / Starten / Pause·Fortsetzen / Beenden */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                  <ActionBtn label="Vorbereiten" color={EVENT_COLOR.vorbereiten} disabled={!allowed.vorbereiten} onClick={() => openAction(t, "vorbereiten")} dark={dark} />
+                  <ActionBtn label="Starten" color={EVENT_COLOR.starten} disabled={!allowed.starten} onClick={() => openAction(t, "starten")} dark={dark} />
+                  {wfStatus === "paused" ? (
+                    <ActionBtn label="Fortsetzen" color={EVENT_COLOR.fortsetzen} disabled={!allowed.fortsetzen} onClick={() => openAction(t, "fortsetzen")} dark={dark} />
+                  ) : (
+                    <ActionBtn label="Pause" color={EVENT_COLOR.pause} disabled={!allowed.pause} onClick={() => openAction(t, "pause")} dark={dark} />
+                  )}
+                  <ActionBtn label="Beenden" color={EVENT_COLOR.beenden} disabled={!allowed.beenden} onClick={() => openAction(t, "beenden")} dark={dark} />
                 </div>
               </div>
-              {t.description && <div className="text-sm">{t.description}</div>}
-              <div className="text-sm italic" style={{ color: textMuted }}>{t.person_ids.map(pn).join(" · ") || "—"}</div>
-              {t.accept_reason && <div className="border-l-2 pl-2.5" style={{ borderColor: "rgba(255,255,255,0.2)" }}><div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: textMuted }}>Nicht annehmbar</div><div className="text-sm italic">{t.accept_reason}</div></div>}
-              {t.not_finished_reason && <div className="border-l-2 pl-2.5" style={{ borderColor: "rgba(255,255,255,0.2)" }}><div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: textMuted }}>Nicht beendbar</div><div className="text-sm italic">{t.not_finished_reason}</div></div>}
-              {t.not_done_reason && <div className="border-l-2 pl-2.5" style={{ borderColor: "rgba(255,255,255,0.2)" }}><div className="text-[10px] font-bold tracking-wider uppercase" style={{ color: textMuted }}>Nicht erledigt</div><div className="text-sm italic">{t.not_done_reason}</div></div>}
-              <div className="flex flex-wrap gap-2 mt-2">
-                <GBtn onClick={() => act(t, "accepted", "Annehmen")} dot="#FFD600" label="Annehmen" dark={dark} />
-                <GBtn onClick={() => act(t, "finished", "Beenden")} dot="#00E676" label="Beenden" dark={dark} />
-                <GBtn onClick={() => act(t, "cannot_accept", "Nicht annehmbar")} dot="#FF9500" label="Nicht annehmbar" dark={dark} />
-                <GBtn onClick={() => act(t, "not_finished", "Nicht beendbar")} dot="#FF9500" label="Nicht beendbar" dark={dark} />
-                <GBtn onClick={() => act(t, "not_done", "Nicht erledigt")} dot="#FF3B30" label="Nicht erledigt" dark={dark} />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
       {modal && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-6 z-50">
-          <div className="w-full max-w-xl bg-[rgba(24,24,28,0.95)] border border-white/10 rounded-2xl p-5 space-y-3">
-            <div className="text-xl font-extrabold tracking-wide">{modal.title}</div>
-            <div className="text-white/60 text-sm">Bitte Grund eingeben:</div>
-            <textarea autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Grund..." rows={3} className="w-full bg-white/5 border border-white/10 rounded-xl p-3.5 text-white resize-none outline-none focus:border-brand-yellow" />
-            <div className="flex gap-3 mt-2">
-              <button onClick={() => setModal(null)} className="flex-1 h-14 border-2 border-white/10 bg-white/5 rounded-xl font-black tracking-wide">ABBRECHEN</button>
-              <button onClick={() => { updateStatus(modal.taskId, modal.status, reason.trim()); setModal(null); }} className="flex-1 h-14 bg-brand-yellow text-black rounded-xl font-black tracking-wide">BESTÄTIGEN</button>
-            </div>
-          </div>
-        </div>
+        <NoteModal
+          title={EVENT_LABEL[modal.type]}
+          color={EVENT_COLOR[modal.type]}
+          taskName={modal.taskName}
+          note={note}
+          setNote={setNote}
+          onCancel={() => { setModal(null); setNote(""); }}
+          onConfirm={confirmAction}
+        />
       )}
     </div>
   );
 }
 
-const GBtn = ({ onClick, dot, label, dark }: any) => (
+const InfoCell = ({ label, value, dark, mono, highlight }: { label: string; value: string; dark: boolean; mono?: boolean; highlight?: string }) => (
+  <div className="rounded-lg px-2.5 py-1.5 border" style={{ borderColor: highlight ? highlight + "55" : (dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)"), backgroundColor: highlight ? highlight + "10" : (dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)") }}>
+    <div className="text-[10px] font-bold tracking-widest uppercase opacity-60">{label}</div>
+    <div className={`text-sm font-bold ${mono ? "font-mono tabular-nums" : ""}`} style={{ color: highlight || (dark ? "#fff" : "#000") }}>{value}</div>
+  </div>
+);
+
+const ActionBtn = ({ label, color, disabled, onClick, dark }: { label: string; color: string; disabled?: boolean; onClick: () => void; dark: boolean }) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    className="h-12 rounded-xl font-black text-sm tracking-wide transition active:scale-95 disabled:cursor-not-allowed"
+    style={{
+      backgroundColor: disabled ? (dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)") : color,
+      color: disabled ? (dark ? "rgba(255,255,255,0.30)" : "rgba(0,0,0,0.30)") : "#FFFFFF",
+      border: `2px solid ${disabled ? "transparent" : color}`,
+      opacity: disabled ? 0.55 : 1,
+      boxShadow: disabled ? "none" : `0 4px 14px ${color}55`,
+    }}
+  >
+    {label}
+  </button>
+);
+
+const NoteModal = ({ title, color, taskName, note, setNote, onCancel, onConfirm }: { title: string; color: string; taskName: string; note: string; setNote: (v: string) => void; onCancel: () => void; onConfirm: () => void; }) => (
+  <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-6 z-50">
+    <div className="w-full max-w-xl rounded-2xl p-5 space-y-3" style={{ backgroundColor: "rgba(24,24,28,0.97)", border: `2px solid ${color}` }}>
+      <div className="flex items-center gap-2.5">
+        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
+        <div className="text-xl font-black tracking-wide" style={{ color }}>{title}</div>
+      </div>
+      <div className="text-white/70 text-sm">Aufgabe: <span className="font-bold text-white">{taskName}</span></div>
+      <div className="text-white/60 text-sm">Notiz hinzufügen (optional):</div>
+      <textarea
+        autoFocus
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="Notiz zu diesem Schritt..."
+        rows={4}
+        className="w-full rounded-xl p-3.5 resize-none outline-none font-medium"
+        style={{ backgroundColor: "rgba(255,255,255,0.05)", border: `1.5px solid ${color}66`, color, caretColor: color }}
+      />
+      <div className="flex gap-3 mt-2">
+        <button onClick={onCancel} className="flex-1 h-13 py-3 border-2 border-white/15 bg-white/5 text-white rounded-xl font-black tracking-wide">ABBRECHEN</button>
+        <button
+          onClick={onConfirm}
+          className="flex-1 h-13 py-3 rounded-xl font-black tracking-wide text-white"
+          style={{ backgroundColor: color, boxShadow: `0 4px 14px ${color}66` }}
+        >
+          BESTÄTIGEN
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+const GBtn_unused = ({ onClick, dot, label, dark }: any) => (
   <button onClick={onClick} className="flex items-center gap-2 px-3.5 py-2.5 rounded-full border transition active:scale-95" style={{ backgroundColor: dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)", borderColor: dark ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.12)", color: dark ? "#fff" : "#000" }}>
     <span className="w-2 h-2 rounded-full" style={{ backgroundColor: dot }} />
     <span className="text-xs font-semibold">{label}</span>
   </button>
 );
+void GBtn_unused;
