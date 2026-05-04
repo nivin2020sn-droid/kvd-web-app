@@ -178,6 +178,13 @@ router.get('/tasks/today', async (req, res) => {
   res.json(await TaskModel.find({ archived: false, task_date: today }, { _id: 0 }).lean());
 });
 
+// Generic: GET /tasks/by-date?date=YYYY-MM-DD (used by Admin Heute/Morgen tabs + by Tablet "Für morgen" panel)
+router.get('/tasks/by-date', async (req, res) => {
+  const date = String(req.query.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: 'date muss YYYY-MM-DD sein' });
+  res.json(await TaskModel.find({ archived: false, task_date: date }, { _id: 0 }).lean());
+});
+
 router.post('/tasks', requireAdmin, async (req, res) => {
   const b = req.body || {};
   if (!b.task_type || !b.haus || !b.station || !b.time_from || !b.time_to) {

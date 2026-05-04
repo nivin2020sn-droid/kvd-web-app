@@ -64,6 +64,13 @@ export async function localHandler<T = any>(path: string, method: string, body?:
     const today = todayStr();
     return getList<Task>(K.tasks).filter((t) => !t.archived && t.task_date === today) as any;
   }
+  // Generic lookup by date: /tasks/by-date?date=YYYY-MM-DD
+  if (pathOnly === "/tasks/by-date" && method === "GET") {
+    const qDate = (path.match(/[?&]date=([^&]+)/) || [])[1] || "";
+    const d = decodeURIComponent(qDate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return [] as any;
+    return getList<Task>(K.tasks).filter((t) => !t.archived && t.task_date === d) as any;
+  }
   if (pathOnly === "/tasks" && method === "POST") {
     const t: Task = {
       id: uuid(), task_type: body?.task_type || "", haus: body?.haus || "", station: body?.station || "",

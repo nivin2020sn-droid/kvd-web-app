@@ -178,7 +178,9 @@ function AdminHome() {
   const theme = useAdminTheme();
   const bgColor = resolveBg(theme);
   const darkScope = isDarkHex(bgColor);
+  const [tab, setTab] = useState<"heute" | "morgen">("heute");
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [tomorrowTasks, setTomorrowTasks] = useState<Task[]>([]);
   const [persons, setPersons] = useState<SimpleItem[]>([]);
   const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
   const [loading, setLoading] = useState(true);
@@ -187,16 +189,24 @@ function AdminHome() {
   const [timeEditTask, setTimeEditTask] = useState<Task | null>(null);
   const [undoTask, setUndoTask] = useState<Task | null>(null);
   const [busyId, setBusyId] = useState<string>("");
+  const tomorrowISO = (): string => {
+    const todayBerlin = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
+    const d = new Date(todayBerlin + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
+  };
 
   useEffect(() => { const u = subscribeServerConfig((c) => setOnline(!!c)); return () => { u(); }; }, []);
   const load = async () => {
     try {
-      const [t, p, wfMap] = await Promise.all([
+      const [t, p, wfMap, tmw] = await Promise.all([
         api<Task[]>("/tasks/today"),
         api<SimpleItem[]>("/persons"),
         fetchAllWorkflows(),
+        api<Task[]>(`/tasks/by-date?date=${tomorrowISO()}`).catch(() => []),
       ]);
       setTasks(t); setPersons(p); setWorkflows(wfMap);
+      setTomorrowTasks(Array.isArray(tmw) ? tmw : []);
     } catch {} finally { setLoading(false); }
   };
   useEffect(() => {
@@ -239,7 +249,7 @@ function AdminHome() {
     <div className={`admin-scope ${darkScope ? "dark" : "light"}`} style={{ ["--admin-bg" as any]: bgColor }}>
     <div className="min-h-full flex flex-col">
       <div className="flex items-center justify-between p-5">
-        <div className="min-w-0 flex-1 mr-3"><div className="text-2xl font-black tracking-widest uppercase truncate">{adminName}</div><div className="text-xs tracking-wider opacity-60">Aufgaben heute · {tasks.length}</div></div>
+        <div className="min-w-0 flex-1 mr-3"><div className="text-2xl font-black tracking-widest uppercase truncate">{adminName}</div><div className="text-xs tracking-wider opacity-60">{tab === "heute" ? `Aufgaben heute · ${tasks.length}` : `Für morgen geplant · ${tomorrowTasks.length}`}</div></div>
         <button onClick={logout} className="p-2"><Icon d={ICONS.logout} size={22} color={darkScope ? "#fff" : "#000"} /></button>
       </div>
       <div className={`mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-full border bg-surface-card ${online ? "border-brand-green" : "border-brand-orange"}`}>
@@ -247,20 +257,45 @@ function AdminHome() {
         <span className="flex-1 text-xs font-bold">{online ? "Online · Live-Updates aktiv" : "Offline-Modus · Lokale Daten"}</span>
         <button onClick={() => nav("/admin/server")} className="border border-surface-border px-2.5 py-1 rounded-md text-xs font-bold">Server</button>
       </div>
+      {/* Date-range tabs: Heute · Morgen · Archiv */}
+      <div className="flex gap-2 px-3 pb-2">
+        <button
+          onClick={() => setTab("heute")}
+          className={`flex-1 py-2.5 rounded-lg border-2 font-black text-xs tracking-[2px] transition ${tab === "heute" ? "bg-brand-blue/20 border-brand-blue text-brand-blue" : "bg-surface-card border-surface-border opacity-70"}`}
+        >
+          HEUTE · {tasks.length}
+        </button>
+        <button
+          onClick={() => setTab("morgen")}
+          className={`flex-1 py-2.5 rounded-lg border-2 font-black text-xs tracking-[2px] transition ${tab === "morgen" ? "border-indigo-500 text-indigo-500" : "bg-surface-card border-surface-border opacity-70"}`}
+          style={tab === "morgen" ? { backgroundColor: EVENT_COLOR.feierabend + "20", borderColor: EVENT_COLOR.feierabend, color: EVENT_COLOR.feierabend } : undefined}
+        >
+          MORGEN · {tomorrowTasks.length}
+        </button>
+        <button
+          onClick={() => nav("/admin/archive")}
+          className="flex-1 py-2.5 rounded-lg border-2 font-black text-xs tracking-[2px] bg-surface-card border-surface-border opacity-70 hover:opacity-100"
+        >
+          ARCHIV
+        </button>
+      </div>
       <div className="flex gap-2 px-3 pb-3 border-b border-surface-border">
         <ToolBtn onClick={() => nav("/admin/create")} icon={ICONS.plus} label="Neu" primary />
         <ToolBtn onClick={() => nav("/admin/manage")} icon={ICONS.list} label="Listen" />
-        <ToolBtn onClick={() => nav("/admin/archive")} icon={ICONS.archive} label="Archiv" />
         <ToolBtn onClick={() => nav("/admin/settings")} icon={ICONS.settings} label="Einstell." />
       </div>
       <div className="flex-1 p-4 space-y-3">
-        {loading ? <div className="flex justify-center mt-12"><Spin /></div> : tasks.length === 0 ? (
-          <div className="mt-16 text-center text-white/50 space-y-2">
-            <div className="flex justify-center"><Icon d={ICONS.clipboard} size={48} /></div>
-            <div className="text-lg font-bold text-white">Keine Aufgaben heute</div>
-            <div className="text-sm">Tippen Sie auf NEU, um eine Aufgabe hinzuzufügen.</div>
-          </div>
-        ) : tasks.map((t) => {
+        {(() => {
+          const activeTasks = tab === "heute" ? tasks : tomorrowTasks;
+          if (loading) return <div className="flex justify-center mt-12"><Spin /></div>;
+          if (activeTasks.length === 0) return (
+            <div className="mt-16 text-center opacity-60 space-y-2">
+              <div className="flex justify-center"><Icon d={ICONS.clipboard} size={48} /></div>
+              <div className="text-lg font-bold">{tab === "heute" ? "Keine Aufgaben heute" : "Keine Aufgaben für morgen"}</div>
+              <div className="text-sm">{tab === "heute" ? "Tippen Sie auf NEU, um eine Aufgabe hinzuzufügen." : "Hier erscheinen Aufgaben, die durch Feierabend verschoben wurden."}</div>
+            </div>
+          );
+          return activeTasks.map((t) => {
           const wf = workflows[t.id] || getWorkflow(t.id);
           const wfStatus: WorkflowStatus = wf.status;
           const isRunning = wfStatus === "running";
@@ -358,9 +393,10 @@ function AdminHome() {
               </div>
             </div>
           );
-        })}
+        });
+        })()}
       </div>
-      {tasks.length > 0 && (
+      {tab === "heute" && tasks.length > 0 && (
         <button onClick={archiveAll} className="m-4 mt-0 bg-brand-yellow text-black font-black tracking-[2px] h-14 flex items-center justify-center gap-2 rounded-xl">
           <Icon d={ICONS.archive} size={18} color="#000" /> HEUTE JETZT ARCHIVIEREN
         </button>
@@ -1263,6 +1299,7 @@ function AdminServer() {
 function Tablet() {
   const nav = useNavigate();
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [tomorrowTasks, setTomorrowTasks] = useState<Task[]>([]);
   const [persons, setPersons] = useState<SimpleItem[]>([]);
   const [s, setS] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1277,18 +1314,33 @@ function Tablet() {
   const [tlTime, setTlTime] = useState("");
   const [tlNote, setTlNote] = useState("");
   const [tlBusy, setTlBusy] = useState(false);
+  // Toast for user feedback on non-destructive workflow actions (Feierabend)
+  const [toast, setToast] = useState<{ msg: string; tone: "info" | "success" } | null>(null);
+  const showToast = (msg: string, tone: "info" | "success" = "success", durationMs = 3800) => {
+    setToast({ msg, tone });
+    window.setTimeout(() => setToast((t) => (t && t.msg === msg ? null : t)), durationMs);
+  };
 
   useEffect(() => { const u = subscribeServerConfig((c) => setOnline(!!c)); return () => { u(); }; }, []);
+  const tomorrowISO = (): string => {
+    // Europe/Berlin local day + 1
+    const todayBerlin = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
+    const d = new Date(todayBerlin + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
+  };
   const load = async () => {
     try {
-      const [t, p, st, wfMap] = await Promise.all([
+      const [t, p, st, wfMap, tmw] = await Promise.all([
         api<Task[]>("/tasks/today"),
         api<SimpleItem[]>("/persons"),
         api<AppSettings>("/settings"),
         fetchAllWorkflows(),
+        api<Task[]>(`/tasks/by-date?date=${tomorrowISO()}`).catch(() => []),
       ]);
       setTasks(t); setPersons(p); setS(st);
       setWorkflows(wfMap);
+      setTomorrowTasks(Array.isArray(tmw) ? tmw : []);
     } catch {} finally { setLoading(false); }
   };
   useEffect(() => {
@@ -1327,12 +1379,17 @@ function Tablet() {
     const personsSnap = task?.person_ids ? [...task.person_ids] : undefined;
     const wf = await recordEvent(m.taskId, m.type, noteVal, m.taskName, personsSnap);
     setWorkflows((prev) => ({ ...prev, [m.taskId]: wf }));
-    // On Feierabend: reload today's tasks — the task's task_date got bumped to tomorrow,
-    // so it will disappear from today's list until a WS refresh / next day.
+    // On Feierabend: show a visible "verschoben auf morgen" toast + reload both
+    // today's and tomorrow's lists so the task clearly moves to "Für morgen geplant".
     if (m.type === "feierabend") {
+      showToast(`„${m.taskName}" wurde auf morgen verschoben`, "success");
       try {
-        const r = await api<{ tasks: Task[] }>("/tasks/today");
-        setTasks(r.tasks);
+        const [today, tmw] = await Promise.all([
+          api<Task[]>("/tasks/today"),
+          api<Task[]>(`/tasks/by-date?date=${tomorrowISO()}`).catch(() => []),
+        ]);
+        setTasks(today);
+        setTomorrowTasks(Array.isArray(tmw) ? tmw : []);
       } catch {}
     }
   };
@@ -1499,7 +1556,83 @@ function Tablet() {
             );
           })}
         </div>
+
+        {/* ============ FÜR MORGEN GEPLANT ============ */}
+        {tomorrowTasks.length > 0 && (
+          <div className="mt-10 pt-5 border-t" style={{ borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.10)" }}>
+            <div className="flex items-center gap-2.5 mb-3">
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: EVENT_COLOR.feierabend, boxShadow: `0 0 10px ${EVENT_COLOR.feierabend}` }} />
+              <div className="text-xs font-black tracking-[3px] uppercase" style={{ color: EVENT_COLOR.feierabend }}>Für morgen geplant</div>
+              <span className="text-xs font-bold opacity-60" style={{ color: dark ? "#fff" : "#000" }}>({tomorrowTasks.length})</span>
+            </div>
+            <div className="space-y-2.5">
+              {tomorrowTasks.map((t) => {
+                const wf = workflows[t.id];
+                return (
+                  <div key={t.id} className="rounded-xl border-2 overflow-hidden"
+                    style={{
+                      borderColor: EVENT_COLOR.feierabend + "55",
+                      backgroundColor: dark ? "rgba(99,102,241,0.08)" : "rgba(99,102,241,0.06)",
+                      color: dark ? "#fff" : "#000",
+                      maxWidth: "100%",
+                    }}>
+                    <div className="flex items-start gap-3 p-3 flex-wrap">
+                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg shrink-0" style={{ backgroundColor: EVENT_COLOR.feierabend + "22", color: EVENT_COLOR.feierabend }}>
+                        <span className="font-extrabold text-sm">{t.time_from}</span>
+                        <span className="opacity-60">—</span>
+                        <span className="font-extrabold text-sm">{t.time_to}</span>
+                      </div>
+                      <div className="flex-1 min-w-[120px] max-w-full overflow-hidden">
+                        <div className="text-base font-extrabold leading-tight"
+                          style={{ overflowWrap: "break-word", wordBreak: "break-word", whiteSpace: "normal", maxWidth: "100%" }}>
+                          {t.task_type}
+                        </div>
+                        <div className="text-[10px] font-bold tracking-widest mt-0.5 opacity-70"
+                          style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>
+                          HAUS {t.haus} · STATION {t.station} · {t.person_ids.map(pn).join(" · ") || "—"}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border shrink-0"
+                        style={{ borderColor: EVENT_COLOR.feierabend + "66", backgroundColor: EVENT_COLOR.feierabend + "15", color: EVENT_COLOR.feierabend }}>
+                        <span className="text-[10px] font-black tracking-wider">WIRD FORTGESETZT</span>
+                      </div>
+                    </div>
+                    {wf && wf.events && wf.events.length > 0 && (
+                      <div className="px-3 pb-3 text-[11px] opacity-80" style={{ color: dark ? "#fff" : "#000" }}>
+                        <span className="font-bold">Bereits gearbeitet:</span>{" "}
+                        <span className="font-mono tabular-nums">{formatDuration(totalWorkMs(wf))}</span>
+                        <span className="mx-1.5 opacity-40">·</span>
+                        <span className="font-bold">Letzte Aktion:</span>{" "}
+                        <span>{EVENT_LABEL[wf.last_event_type as EventType] || "—"}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* ============ TOAST (Feierabend-Bestätigung) ============ */}
+      {toast && (
+        <div
+          className="fixed left-1/2 -translate-x-1/2 bottom-6 z-50 px-5 py-3.5 rounded-2xl shadow-2xl border-2 max-w-[92%]"
+          style={{
+            backgroundColor: "rgba(24,24,28,0.97)",
+            borderColor: toast.tone === "success" ? EVENT_COLOR.feierabend : "#3B82F6",
+            color: "#fff",
+            boxShadow: `0 8px 24px ${(toast.tone === "success" ? EVENT_COLOR.feierabend : "#3B82F6")}66`,
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex items-center gap-3">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: toast.tone === "success" ? EVENT_COLOR.feierabend : "#3B82F6" }} />
+            <div className="text-sm font-bold" style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>{toast.msg}</div>
+          </div>
+        </div>
+      )}
       {modal && (
         <NoteModal
           title={EVENT_LABEL[modal.type]}
