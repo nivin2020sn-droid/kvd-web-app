@@ -25,8 +25,10 @@ export function MediaModal({ task, isAdmin, currentUserName, onClose, onPhotosCh
   const [pending, setPending] = useState<PendingUpload[]>([]);
   const [viewer, setViewer] = useState<TaskPhoto | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<TaskPhoto | null>(null);
   const [errMsg, setErrMsg] = useState("");
+  const [syncMsg, setSyncMsg] = useState<{ kind: "ok" | "warn" | "err"; text: string } | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const cameraRef = useRef<HTMLInputElement | null>(null);
 
@@ -46,14 +48,19 @@ export function MediaModal({ task, isAdmin, currentUserName, onClose, onPhotosCh
   const handleFiles = async (files: FileList | null) => {
     if (!files || !files.length) return;
     setErrMsg("");
+    setSyncMsg(null);
     setUploading(true);
     const arr = Array.from(files);
+    let okCount = 0, queuedCount = 0;
+    let lastErr = "";
     for (const f of arr) {
       try {
-        if (!hasServer) throw new Error("offline");
+        if (!hasServer) throw new Error("Kein Server konfiguriert");
         const { photo } = await uploadPhoto(task.id, f, { uploadedBy: currentUserName || "" });
         setPhotos(prev => [...prev, photo]);
+        okCount++;
       } catch (e: any) {
+        lastErr = e?.message || "Unbekannter Fehler";
         // Queue for retry when we regain connectivity
         try {
           await queueUpload({
@@ -64,12 +71,21 @@ export function MediaModal({ task, isAdmin, currentUserName, onClose, onPhotosCh
             uploadedBy: currentUserName || "",
             filename: f.name || "foto.jpg",
           });
+          queuedCount++;
         } catch (qe: any) {
           setErrMsg("Foto konnte nicht gespeichert werden: " + (qe?.message || ""));
         }
       }
     }
     setUploading(false);
+    if (queuedCount > 0) {
+      setSyncMsg({
+        kind: "warn",
+        text: `${okCount > 0 ? `${okCount} hochgeladen · ` : ""}${queuedCount} Foto(s) in Warteschlange (offline). Letzter Fehler: ${lastErr}`,
+      });
+    } else if (okCount > 0) {
+      setSyncMsg({ kind: "ok", text: `✓ ${okCount} Foto${okCount === 1 ? "" : "s"} hochgeladen.` });
+    }
     await refresh();
     onPhotosChanged?.(await listPhotos(task.id));
   };
@@ -87,10 +103,28 @@ export function MediaModal({ task, isAdmin, currentUserName, onClose, onPhotosCh
   };
 
   const retrySync = async () => {
-    setUploading(true);
-    await syncPending();
-    setUploading(false);
-    await refresh();
+    setSyncing(true);
+    setSyncMsg(null);
+    setErrMsg("");
+    try {
+      const r = await syncPending();
+      if (r.skipped) {
+        setSyncMsg({ kind: "warn", text: `Synchronisation läuft bereits im Hintergrund (${r.total} wartend) …` });
+      } else if (r.uploaded > 0 && r.failed === 0) {
+        setSyncMsg({ kind: "ok", text: `✓ ${r.uploaded} Foto${r.uploaded === 1 ? "" : "s"} erfolgreich hochgeladen.` });
+      } else if (r.uploaded > 0 && r.failed > 0) {
+        setSyncMsg({ kind: "warn", text: `${r.uploaded} hochgeladen · ${r.failed} fehlgeschlagen. ${r.lastError || ""}` });
+      } else if (r.uploaded === 0 && r.failed > 0) {
+        setSyncMsg({ kind: "err", text: `Synchronisation fehlgeschlagen (${r.failed}). ${r.lastError || "Server nicht erreichbar."}` });
+      } else if (r.total === 0) {
+        setSyncMsg({ kind: "ok", text: "Keine wartenden Fotos." });
+      }
+    } catch (e: any) {
+      setSyncMsg({ kind: "err", text: "Synchronisation fehlgeschlagen: " + (e?.message || "Unbekannter Fehler") });
+    } finally {
+      setSyncing(false);
+      await refresh();
+    }
   };
 
   const total = photos.length + pending.length;
@@ -116,10 +150,32 @@ export function MediaModal({ task, isAdmin, currentUserName, onClose, onPhotosCh
         <div className="px-4 py-2 bg-red-500/20 border-b border-red-500/30 text-red-200 text-xs">{errMsg}</div>
       )}
 
+      {syncMsg && (
+        <div
+          className={`px-4 py-2 border-b text-xs flex items-center gap-2 ${
+            syncMsg.kind === "ok" ? "bg-green-500/15 border-green-500/30 text-green-200"
+            : syncMsg.kind === "warn" ? "bg-orange-500/15 border-orange-500/30 text-orange-200"
+            : "bg-red-500/20 border-red-500/30 text-red-200"
+          }`}
+        >
+          <span className="flex-1" style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>{syncMsg.text}</span>
+          <button onClick={() => setSyncMsg(null)} className="opacity-70 hover:opacity-100">✕</button>
+        </div>
+      )}
+
       {pending.length > 0 && hasServer && (
         <div className="px-4 py-2.5 bg-orange-500/10 border-b border-orange-500/30 flex items-center gap-2">
-          <span className="text-xs flex-1 text-orange-300"><b>{pending.length}</b> Foto(s) warten auf Upload.</span>
-          <button onClick={retrySync} disabled={uploading} className="px-3 py-1.5 rounded-md border border-orange-500 bg-orange-500/20 text-orange-300 text-xs font-bold disabled:opacity-40">Jetzt synchronisieren</button>
+          <span className="text-xs flex-1 text-orange-300">
+            <b>{pending.length}</b> Foto(s) warten auf Upload.
+            {pending[0]?.lastError ? <span className="block text-[10px] text-orange-400/80 mt-0.5 truncate">Letzter Fehler: {pending[0].lastError}</span> : null}
+          </span>
+          <button
+            onClick={retrySync}
+            disabled={syncing}
+            className="px-3 py-1.5 rounded-md border border-orange-500 bg-orange-500/20 text-orange-300 text-xs font-bold disabled:opacity-40 active:scale-95"
+          >
+            {syncing ? "Lädt …" : "Jetzt synchronisieren"}
+          </button>
         </div>
       )}
 
@@ -156,11 +212,17 @@ export function MediaModal({ task, isAdmin, currentUserName, onClose, onPhotosCh
               <div key={p.id} className="relative aspect-square overflow-hidden rounded-lg border-2 border-orange-500/50 bg-orange-500/10">
                 <img src={URL.createObjectURL(p.blob)} alt="" className="w-full h-full object-cover opacity-60" />
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                  <div className="text-center text-orange-300">
-                    <div className="text-xl">⏳</div>
-                    <div className="text-[9px] font-bold">Wartend</div>
+                  <div className="text-center text-orange-300 px-1">
+                    <div className="text-xl">{syncing ? "⏫" : "⏳"}</div>
+                    <div className="text-[9px] font-bold">{syncing ? "Lädt..." : "Wartend"}</div>
+                    {p.attempts > 0 && <div className="text-[8px] text-orange-400/80 mt-0.5">Versuche: {p.attempts}</div>}
                   </div>
                 </div>
+                {p.lastError && (
+                  <div className="absolute bottom-0 left-0 right-0 bg-red-900/85 px-1.5 py-0.5">
+                    <div className="text-[8px] text-red-200 font-bold truncate" title={p.lastError}>⚠ {p.lastError}</div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

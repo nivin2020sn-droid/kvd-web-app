@@ -30,8 +30,21 @@ export async function uploadPhoto(
   fd.append("file", file, fname);
   if (opts.caption) fd.append("caption", opts.caption);
   if (opts.uploadedBy) fd.append("uploadedBy", opts.uploadedBy);
-  const res = await fetch(`${base}/tasks/${taskId}/photos`, { method: "POST", body: fd });
-  if (!res.ok) throw new Error(`Upload fehlgeschlagen (${res.status})`);
+  const url = `${base}/tasks/${taskId}/photos`;
+  // eslint-disable-next-line no-console
+  console.log("[photos] POST", url, "size=", (file as any).size, "name=", fname);
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "POST", body: fd });
+  } catch (e: any) {
+    // Network-level failure (offline / DNS / CORS preflight blocked)
+    throw new Error(`Netzwerkfehler: ${e?.message || "Server nicht erreichbar"}`);
+  }
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try { const j = await res.json(); if (j?.detail) detail = `${res.status} – ${j.detail}`; } catch {}
+    throw new Error(`Upload fehlgeschlagen (${detail})`);
+  }
   return res.json();
 }
 
@@ -147,12 +160,26 @@ async function updatePending(rec: PendingUpload): Promise<void> {
 
 /** Called on app startup + every X seconds + on 'online' event. */
 let syncInFlight = false;
-export async function syncPending(onProgress?: (done: number, total: number) => void): Promise<{ uploaded: number; failed: number }> {
-  if (syncInFlight) return { uploaded: 0, failed: 0 };
+export interface SyncResult {
+  uploaded: number;
+  failed: number;
+  skipped?: boolean;     // true if another sync was already running
+  total: number;
+  lastError?: string;    // message of the last failure (if any)
+}
+export async function syncPending(onProgress?: (done: number, total: number) => void): Promise<SyncResult> {
+  if (syncInFlight) {
+    // eslint-disable-next-line no-console
+    console.log("[photos] syncPending skipped — another sync already in flight");
+    const items = await listPending();
+    return { uploaded: 0, failed: 0, skipped: true, total: items.length };
+  }
   syncInFlight = true;
   try {
     const items = await listPending();
-    let uploaded = 0, failed = 0;
+    // eslint-disable-next-line no-console
+    console.log(`[photos] syncPending start — ${items.length} pending`);
+    let uploaded = 0, failed = 0, lastError: string | undefined;
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       try {
@@ -162,12 +189,17 @@ export async function syncPending(onProgress?: (done: number, total: number) => 
       } catch (e: any) {
         it.attempts += 1;
         it.lastError = e?.message || "Unbekannter Fehler";
+        lastError = it.lastError;
         await updatePending(it);
         failed++;
+        // eslint-disable-next-line no-console
+        console.warn(`[photos] sync item failed (attempts=${it.attempts}):`, it.lastError);
       }
       onProgress?.(i + 1, items.length);
     }
-    return { uploaded, failed };
+    // eslint-disable-next-line no-console
+    console.log(`[photos] syncPending end — uploaded=${uploaded} failed=${failed}`);
+    return { uploaded, failed, total: items.length, lastError };
   } finally {
     syncInFlight = false;
   }
