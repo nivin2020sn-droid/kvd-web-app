@@ -7,7 +7,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown } from "./workflow";
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -144,6 +144,8 @@ export function downloadTaskPdf(task: Task, wf: TaskWorkflow | null, persons: Si
   cursorY = (doc as any).lastAutoTable.finalY + 9;
 
   // ===== SECTION: Verlauf & Timeline =====
+  const days = wf ? buildDailyBreakdown(wf) : [];
+  const multiDay = days.length > 1;
   // Ensure we have room for heading + table header
   if (cursorY > pageH - marginBottom - 40) {
     doc.addPage();
@@ -158,13 +160,16 @@ export function downloadTaskPdf(task: Task, wf: TaskWorkflow | null, persons: Si
   doc.line(marginX, cursorY + 1.2, pageW - marginX, cursorY + 1.2);
   cursorY += 4;
 
-  if (events.length === 0) {
+  if (multiDay) {
     doc.setFont("helvetica", "italic");
-    doc.setFontSize(10);
-    doc.setTextColor(110, 110, 110);
-    doc.text("Keine Ereignisse vorhanden.", marginX, cursorY + 4);
-  } else {
-    const eventBody = events.map((ev) => {
+    doc.setFontSize(9);
+    doc.setTextColor(90, 90, 90);
+    doc.text(`Diese Aufgabe erstreckt sich über ${days.length} Arbeitstage. Einträge sind nach Tagen gruppiert.`, marginX, cursorY + 3);
+    cursorY += 7;
+  }
+
+  const renderEventTable = (evs: WorkflowEvent[], startY: number): number => {
+    const body = evs.map((ev) => {
       const typeLabel = EVENT_LABEL[ev.type] || ev.type;
       const undone = ev.undone ? " (zurückgenommen)" : "";
       const creator = ev.created_by ? `\n(${ev.created_by})` : "";
@@ -177,13 +182,12 @@ export function downloadTaskPdf(task: Task, wf: TaskWorkflow | null, persons: Si
       }
       return { typ: typCell, zeit: zeitCell, notiz: notizCell, _undone: !!ev.undone };
     });
-
     autoTable(doc, {
-      startY: cursorY,
+      startY,
       theme: "plain",
       margin: { left: marginX, right: marginX, bottom: marginBottom },
       head: [["Typ", "Zeit (24h)", "Notiz"]],
-      body: eventBody.map((r) => [r.typ, r.zeit, r.notiz]),
+      body: body.map((r) => [r.typ, r.zeit, r.notiz]),
       headStyles: {
         fillColor: [0, 0, 0],
         textColor: [255, 255, 255],
@@ -203,12 +207,12 @@ export function downloadTaskPdf(task: Task, wf: TaskWorkflow | null, persons: Si
         valign: "top",
       },
       columnStyles: {
-        0: { cellWidth: 38 },                           // Typ  (fixed but wraps)
-        1: { cellWidth: 32, font: "courier", fontSize: 10 }, // Zeit  (mono)
-        2: { cellWidth: "auto" },                       // Notiz (fills rest, wraps)
+        0: { cellWidth: 38 },
+        1: { cellWidth: 32, font: "courier", fontSize: 10 },
+        2: { cellWidth: "auto" },
       },
       didParseCell: (data) => {
-        if (data.section === "body" && eventBody[data.row.index]?._undone) {
+        if (data.section === "body" && body[data.row.index]?._undone) {
           data.cell.styles.textColor = [120, 120, 120];
           data.cell.styles.fontStyle = "italic";
         }
@@ -222,6 +226,69 @@ export function downloadTaskPdf(task: Task, wf: TaskWorkflow | null, persons: Si
         }
       },
     });
+    return (doc as any).lastAutoTable.finalY;
+  };
+
+  if (events.length === 0) {
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(10);
+    doc.setTextColor(110, 110, 110);
+    doc.text("Keine Ereignisse vorhanden.", marginX, cursorY + 4);
+  } else if (!multiDay) {
+    cursorY = renderEventTable(events, cursorY);
+  } else {
+    // Render a boxed section per day
+    for (let i = 0; i < days.length; i++) {
+      const d = days[i];
+      // Need space for day header (approx 14mm)
+      if (cursorY > pageH - marginBottom - 30) { doc.addPage(); cursorY = marginTop; }
+
+      // Day header box
+      const boxTop = cursorY;
+      const dayLabel = new Date(d.date + "T12:00:00").toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
+      const dayPersons = d.persons.length ? d.persons.map((id) => persons.find((p) => p.id === id)?.name || id.slice(0, 6)).join(", ") : "—";
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.4);
+      doc.setFillColor(245, 245, 245);
+      doc.rect(marginX, boxTop, pageW - marginX * 2, 14, "FD");
+      // Tag N + date
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 100, 100);
+      doc.text(`TAG ${i + 1}`, marginX + 3, boxTop + 4.5);
+      doc.setFontSize(12);
+      doc.setTextColor(0, 0, 0);
+      doc.text(dayLabel, marginX + 3, boxTop + 9.5);
+      // KPIs on right
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(90, 90, 90);
+      doc.text("Arbeitszeit", pageW - marginX - 40, boxTop + 4.5);
+      doc.text("Pause-Zeit", pageW - marginX - 18, boxTop + 4.5);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(0, 0, 0);
+      doc.text(formatDuration(d.workMs), pageW - marginX - 40, boxTop + 9.5);
+      doc.text(formatDuration(d.pauseMs), pageW - marginX - 18, boxTop + 9.5);
+      // Mitarbeiter line
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(40, 40, 40);
+      const persLines = doc.splitTextToSize(`Mitarbeiter: ${dayPersons}`, pageW - marginX * 2 - 6);
+      doc.text(persLines, marginX + 3, boxTop + 13);
+      cursorY = boxTop + 14 + Math.max(0, (persLines.length - 1) * 3.5) + 2;
+
+      // Events table
+      if (d.events.length === 0) {
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(9.5);
+        doc.setTextColor(110, 110, 110);
+        doc.text("Keine Ereignisse an diesem Tag.", marginX + 3, cursorY + 4);
+        cursorY += 8;
+      } else {
+        cursorY = renderEventTable(d.events, cursorY) + 6;
+      }
+    }
   }
 
   // ===== FOOTER (on every page) =====

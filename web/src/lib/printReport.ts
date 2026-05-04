@@ -6,7 +6,7 @@
 
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown } from "./workflow";
 
 function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -35,6 +35,8 @@ export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: Si
   const workMs = wf ? totalWorkMs(wf) : 0;
   const pauseMs = wf ? totalPauseMs(wf) : 0;
   const events = buildEventRows(wf);
+  const days = wf ? buildDailyBreakdown(wf) : [];
+  const multiDay = days.length > 1;
   const title = `${task.task_type}`;
   const datumStr = fmtDate(task.task_date || new Date().toISOString());
   const statusLabel = wf ? STATUS_LABEL_DE[wf.status] : "—";
@@ -42,7 +44,7 @@ export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: Si
   const infoRow = (label: string, value: string) =>
     `<tr><th>${esc(label)}</th><td>${value}</td></tr>`;
 
-  const eventRows = events.map((ev) => {
+  const buildEventRowHtml = (ev: WorkflowEvent) => {
     const typeLabel = EVENT_LABEL[ev.type] || ev.type;
     const undone = ev.undone ? " (zurückgenommen)" : "";
     const corr = ev.corrections && ev.corrections.length
@@ -57,6 +59,44 @@ export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: Si
         <td class="col-zeit">${esc(fmtTime24(ev.ts))}<div class="muted small">${esc(fmtDate(ev.ts))}</div></td>
         <td class="col-notiz">${noteText}${corr}</td>
       </tr>`;
+  };
+
+  const eventRows = events.map(buildEventRowHtml).join("");
+
+  // Build per-day sections HTML (only when multi-day)
+  const daysSectionsHtml = !multiDay ? "" : days.map((d, idx) => {
+    const dayPersons = d.persons.length > 0 ? d.persons.map(pn).join(", ") : "—";
+    const dayDate = fmtDate(d.date + "T12:00:00");
+    const rows = d.events.map(buildEventRowHtml).join("");
+    return `
+    <div class="day-section">
+      <div class="day-header">
+        <div>
+          <div class="day-tag">Tag ${idx + 1}</div>
+          <div class="day-date">${esc(dayDate)}</div>
+        </div>
+        <div class="day-kpis">
+          <div><span class="muted small">Arbeitszeit</span><div class="kpi-val">${esc(formatDuration(d.workMs))}</div></div>
+          <div><span class="muted small">Pause-Zeit</span><div class="kpi-val">${esc(formatDuration(d.pauseMs))}</div></div>
+        </div>
+      </div>
+      <table class="info compact">
+        <tbody>
+          <tr><th>Mitarbeiter</th><td>${esc(dayPersons)}</td></tr>
+        </tbody>
+      </table>
+      ${d.events.length === 0 ? '<p class="muted">Keine Ereignisse an diesem Tag.</p>' : `
+      <table class="events">
+        <thead>
+          <tr>
+            <th class="col-typ">Typ</th>
+            <th class="col-zeit">Zeit</th>
+            <th class="col-notiz">Notiz</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`}
+    </div>`;
   }).join("");
 
   const now = new Date();
@@ -241,6 +281,55 @@ export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: Si
   .muted { color: #666; }
   .small { font-size: 9pt; }
 
+  /* ---- Day section (multi-day Feierabend layout) ---- */
+  .day-section {
+    border: 1.5px solid #000;
+    border-radius: 4px;
+    margin: 10px 0 14px 0;
+    padding: 10px 12px;
+    page-break-inside: avoid;
+  }
+  .day-section .day-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 1px solid #333;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+  }
+  .day-section .day-tag {
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #555;
+  }
+  .day-section .day-date {
+    font-size: 13pt;
+    font-weight: 700;
+    margin-top: 2px;
+  }
+  .day-section .day-kpis {
+    display: flex;
+    gap: 20px;
+    text-align: right;
+  }
+  .day-section .day-kpis .kpi-val {
+    font-size: 12pt;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+  .day-section table.info.compact th,
+  .day-section table.info.compact td {
+    padding: 4px 8px;
+    font-size: 10pt;
+  }
+  .day-section table.info.compact {
+    margin-bottom: 6px;
+  }
+
   /* ---- Footer ---- */
   .footer {
     margin-top: 28px;
@@ -332,7 +421,10 @@ export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: Si
   </table>
 
   <h2>Verlauf &amp; Timeline</h2>
-  ${events.length === 0 ? '<p class="muted">Keine Ereignisse vorhanden.</p>' : `
+  ${multiDay ? `
+    <p class="muted small" style="margin:0 0 8px 0">Diese Aufgabe erstreckt sich über <strong>${days.length} Arbeitstage</strong>. Die Einträge sind nach Tagen gruppiert.</p>
+    ${daysSectionsHtml}
+  ` : (events.length === 0 ? '<p class="muted">Keine Ereignisse vorhanden.</p>' : `
   <table class="events">
     <thead>
       <tr>
@@ -345,7 +437,7 @@ export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: Si
       ${eventRows}
     </tbody>
   </table>
-  `}
+  `)}
 
   <div class="footer">
     <div>Gedruckt am ${esc(printDateTime)}</div>

@@ -272,8 +272,14 @@ router.get('/update-info', (req, res) => {
 });
 
 // ===== Workflow (Tablet → Admin live sync) =====
-const VALID_EVENTS = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden']);
-const USER_EVENT_TYPES = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden']);
+const VALID_EVENTS = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden', 'feierabend']);
+const USER_EVENT_TYPES = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden', 'feierabend']);
+
+function tomorrowStr(fromDate) {
+  const d = fromDate ? new Date(fromDate + 'T00:00:00Z') : new Date();
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
 
 // Rebuilds a workflow's state (status, segments, timestamps) from its events array.
 // Admin events (admin_zeitkorrektur, admin_beenden_rueckgaengig) and `undone` events are ignored
@@ -318,6 +324,14 @@ function recomputeWorkflow(wf) {
         if (last && !last.end) last.end = ev.ts;
         break;
       }
+      case 'feierabend': {
+        // Like pause: closes current segment. Status → deferred (Wird morgen fortgesetzt).
+        status = 'deferred';
+        const last = segments[segments.length - 1];
+        if (last && !last.end) last.end = ev.ts;
+        paused_at = null;
+        break;
+      }
     }
   }
   // last note = last non-admin, non-undone event
@@ -336,7 +350,7 @@ function recomputeWorkflow(wf) {
   };
 }
 
-function applyWorkflowEvent(wf, type, note, taskName) {
+function applyWorkflowEvent(wf, type, note, taskName, personsSnapshot) {
   const before = wf.status || 'idle';
   const now = new Date().toISOString();
   let after = before;
@@ -376,6 +390,13 @@ function applyWorkflowEvent(wf, type, note, taskName) {
       wf.paused_at = null;
       break;
     }
+    case 'feierabend': {
+      after = 'deferred';
+      const last = wf.segments?.[wf.segments.length - 1];
+      if (last && !last.end) last.end = now;
+      wf.paused_at = null;
+      break;
+    }
   }
   wf.status = after;
   wf.last_note = note || '';
@@ -384,6 +405,7 @@ function applyWorkflowEvent(wf, type, note, taskName) {
   wf.events.push({
     type, ts: now, note: note || '',
     status_before: before, status_after: after, task_name: taskName || '',
+    persons: Array.isArray(personsSnapshot) ? personsSnapshot : undefined,
   });
   return wf;
 }
@@ -415,12 +437,21 @@ router.post('/workflows/:task_id/event', async (req, res) => {
     prepared_at: null, started_at: null, paused_at: null, finished_at: null,
     last_note: '', last_event_type: null,
   };
-  const updated = applyWorkflowEvent({ ...base }, type, note, task_name);
+  // Snapshot current person_ids of the task (so we know who worked today)
+  const taskDoc = await TaskModel.findOne({ id: req.params.task_id }, { _id: 0 }).lean();
+  const personsSnapshot = taskDoc?.person_ids ? [...taskDoc.person_ids] : [];
+  const updated = applyWorkflowEvent({ ...base }, type, note, task_name, personsSnapshot);
   await WorkflowModel.findOneAndUpdate(
     { task_id: req.params.task_id },
     { $set: updated },
     { upsert: true, new: true },
   );
+  // On Feierabend: advance task_date to the next day so the task shows up tomorrow
+  if (type === 'feierabend' && taskDoc) {
+    const newDate = tomorrowStr(taskDoc.task_date || todayStr());
+    await TaskModel.updateOne({ id: req.params.task_id }, { $set: { task_date: newDate } });
+    broadcast({ type: 'tasks_updated' });
+  }
   broadcast({ type: 'workflow_updated', workflow: updated });
   res.json(updated);
 });

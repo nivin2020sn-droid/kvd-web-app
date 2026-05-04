@@ -5,13 +5,14 @@
 import { api } from "./api";
 import { loadServerConfig } from "./serverConfig";
 
-export type WorkflowStatus = "idle" | "prepared" | "running" | "paused" | "finished";
+export type WorkflowStatus = "idle" | "prepared" | "running" | "paused" | "deferred" | "finished";
 export type EventType =
   | "vorbereiten"
   | "starten"
   | "pause"
   | "fortsetzen"
   | "beenden"
+  | "feierabend"
   | "admin_zeitkorrektur"
   | "admin_beenden_rueckgaengig"
   | "timeline";
@@ -22,6 +23,7 @@ const USER_EVENT_TYPES: Set<EventType> = new Set([
   "pause",
   "fortsetzen",
   "beenden",
+  "feierabend",
 ]);
 
 export interface WorkflowEvent {
@@ -35,6 +37,7 @@ export interface WorkflowEvent {
   undone_at?: string;
   corrections?: Array<{ target_type: EventType; index: number; old_ts: string; new_ts: string }>;
   created_by?: string;
+  persons?: string[]; // snapshot of task.person_ids at the time of this event
 }
 
 export interface TaskWorkflow {
@@ -94,6 +97,7 @@ function applyEventLocal(
   type: EventType,
   note: string,
   task_name: string,
+  personsSnapshot?: string[],
 ): TaskWorkflow {
   const wf = getWorkflow(task_id);
   const before = wf.status;
@@ -133,6 +137,13 @@ function applyEventLocal(
       wf.paused_at = null;
       break;
     }
+    case "feierabend": {
+      after = "deferred";
+      const last = wf.segments[wf.segments.length - 1];
+      if (last && !last.end) last.end = now;
+      wf.paused_at = null;
+      break;
+    }
   }
 
   wf.status = after;
@@ -145,6 +156,7 @@ function applyEventLocal(
     status_before: before,
     status_after: after,
     task_name,
+    persons: personsSnapshot && personsSnapshot.length ? [...personsSnapshot] : undefined,
   });
   saveWorkflow(wf);
   return wf;
@@ -156,22 +168,35 @@ export async function recordEvent(
   type: EventType,
   note: string,
   task_name: string,
+  personsSnapshot?: string[],
 ): Promise<TaskWorkflow> {
   // Optimistic local update for instant UI feedback
-  const optimistic = applyEventLocal(task_id, type, note, task_name);
+  const optimistic = applyEventLocal(task_id, type, note, task_name, personsSnapshot);
   if (loadServerConfig()) {
     try {
       const serverWf = await api<TaskWorkflow>(`/workflows/${task_id}/event`, {
         method: "POST",
         body: { type, note, task_name },
       });
-      // Server is source of truth – save its result, replacing optimistic state
       saveWorkflow(serverWf);
       return serverWf;
     } catch {
-      // Network error – keep optimistic local state (works offline)
       return optimistic;
     }
+  }
+  // Offline: on feierabend, also advance the task's task_date locally to tomorrow
+  if (type === "feierabend") {
+    try {
+      const K = "local_tasks_v1";
+      const list: any[] = JSON.parse(localStorage.getItem(K) || "[]");
+      const t = list.find((x) => x.id === task_id);
+      if (t) {
+        const base = t.task_date ? new Date(t.task_date + "T00:00:00Z") : new Date();
+        base.setUTCDate(base.getUTCDate() + 1);
+        t.task_date = base.toISOString().slice(0, 10);
+        localStorage.setItem(K, JSON.stringify(list));
+      }
+    } catch {}
   }
   return optimistic;
 }
@@ -372,6 +397,13 @@ function recomputeLocal(wf: TaskWorkflow): TaskWorkflow {
         if (last && !last.end) last.end = ev.ts;
         break;
       }
+      case "feierabend": {
+        status = "deferred";
+        const last = segments[segments.length - 1];
+        if (last && !last.end) last.end = ev.ts;
+        paused_at = null;
+        break;
+      }
     }
   }
   const lastUser = active[active.length - 1];
@@ -422,10 +454,19 @@ export function totalPauseMs(wf: TaskWorkflow, nowMs?: number): number {
   if (!wf.segments || wf.segments.length === 0) return 0;
   const now = nowMs ?? Date.now();
   let total = 0;
+  // Build a quick set of timestamps that represent *Feierabend* segment-ends.
+  // Those gaps (Feierabend → next-day Fortsetzen) must NOT count as pause.
+  const feierabendTs = new Set<string>();
+  for (const ev of wf.events || []) {
+    if (ev.type === "feierabend") feierabendTs.add(ev.ts);
+  }
   for (let i = 0; i < wf.segments.length - 1; i++) {
     const cur = wf.segments[i];
     const nxt = wf.segments[i + 1];
-    if (cur.end && nxt.start) total += new Date(nxt.start).getTime() - new Date(cur.end).getTime();
+    if (!cur.end || !nxt.start) continue;
+    // Skip Feierabend gaps: not working-day pauses, but overnight/off-day gaps.
+    if (feierabendTs.has(cur.end)) continue;
+    total += new Date(nxt.start).getTime() - new Date(cur.end).getTime();
   }
   // currently paused → add open pause duration
   if (wf.status === "paused" && wf.paused_at) {
@@ -441,6 +482,7 @@ export const EVENT_LABEL: Record<EventType, string> = {
   pause: "Pause",
   fortsetzen: "Fortsetzen",
   beenden: "Beenden",
+  feierabend: "Feierabend",
   admin_zeitkorrektur: "Admin · Zeitkorrektur",
   admin_beenden_rueckgaengig: "Admin · Beenden rückgängig",
   timeline: "Timeline",
@@ -452,9 +494,10 @@ export const EVENT_COLOR: Record<EventType, string> = {
   pause: "#FF9500",       // orange
   fortsetzen: "#3B82F6",  // blau
   beenden: "#00E676",     // grün
-  admin_zeitkorrektur: "#FFD600",       // gelb (admin audit)
+  feierabend: "#6366F1",  // indigo (Ende des Tages · wird fortgesetzt)
+  admin_zeitkorrektur: "#FFD600",
   admin_beenden_rueckgaengig: "#FFD600",
-  timeline: "#C084FC",    // helles lila (informativ, neutral)
+  timeline: "#C084FC",
 };
 
 export const STATUS_LABEL_DE: Record<WorkflowStatus, string> = {
@@ -462,6 +505,7 @@ export const STATUS_LABEL_DE: Record<WorkflowStatus, string> = {
   prepared: "Vorbereitet",
   running: "In Arbeit",
   paused: "Pausiert",
+  deferred: "Wird morgen fortgesetzt",
   finished: "Beendet",
 };
 
@@ -470,16 +514,103 @@ export const STATUS_COLOR: Record<WorkflowStatus, string> = {
   prepared: "#A855F7",
   running: "#3B82F6",
   paused: "#FF9500",
+  deferred: "#6366F1",
   finished: "#00E676",
 };
 
 /** Returns which buttons are enabled for the current workflow status. */
-export function allowedActions(status: WorkflowStatus): Record<"vorbereiten" | "starten" | "pause" | "fortsetzen" | "beenden", boolean> {
+export function allowedActions(status: WorkflowStatus): Record<"vorbereiten" | "starten" | "pause" | "fortsetzen" | "beenden" | "feierabend", boolean> {
   return {
     vorbereiten: status === "idle",
-    starten: status === "idle" || status === "prepared",
+    // Starten allowed also from 'deferred' so the next day can begin a new segment
+    starten: status === "idle" || status === "prepared" || status === "deferred",
     pause: status === "running",
-    fortsetzen: status === "paused",
-    beenden: status === "running" || status === "paused",
+    // Fortsetzen allowed after Pause AND after Feierabend (next day resume)
+    fortsetzen: status === "paused" || status === "deferred",
+    beenden: status === "running" || status === "paused" || status === "deferred",
+    // Feierabend only while actively working or paused within the same day
+    feierabend: status === "running" || status === "paused",
   };
+}
+
+// ============ Daily breakdown (dailyWorkLog) ============
+export interface DaySection {
+  date: string;            // YYYY-MM-DD
+  persons: string[];       // union of person snapshots from events on this day
+  events: WorkflowEvent[]; // events that occurred on this day (all types)
+  workMs: number;          // work time attributable to this day (segments trimmed to day bounds)
+  pauseMs: number;         // pause time within this day (gaps within same-day segments)
+  started_at: string | null;
+  feierabend_at: string | null;
+  finished_at: string | null;
+}
+
+function dayKey(iso: string): string { return (iso || "").slice(0, 10); }
+function startOfDayMs(key: string): number { return new Date(key + "T00:00:00").getTime(); }
+function endOfDayMs(key: string): number { return new Date(key + "T23:59:59.999").getTime(); }
+
+export function buildDailyBreakdown(wf: TaskWorkflow, nowMs?: number): DaySection[] {
+  const events = wf?.events || [];
+  const segs = wf?.segments || [];
+  const now = nowMs ?? Date.now();
+
+  // Collect all relevant day keys (from events AND segments)
+  const days = new Set<string>();
+  for (const ev of events) {
+    if (ev.ts) days.add(dayKey(ev.ts));
+  }
+  for (const s of segs) {
+    if (s.start) days.add(dayKey(s.start));
+    if (s.end) days.add(dayKey(s.end));
+    else days.add(dayKey(new Date(now).toISOString()));
+  }
+  const sortedDays = [...days].sort();
+
+  // Also pre-build sorted running-segment events to derive pause within day
+  return sortedDays.map((date) => {
+    const dayStart = startOfDayMs(date);
+    const dayEnd = endOfDayMs(date);
+    const eventsOfDay = events
+      .filter((e) => dayKey(e.ts) === date)
+      .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+
+    // Work time: sum segment overlap with [dayStart, dayEnd]
+    let workMs = 0;
+    const daySegs: Array<{ start: number; end: number }> = [];
+    for (const s of segs) {
+      const segStart = new Date(s.start).getTime();
+      const segEnd = s.end ? new Date(s.end).getTime() : now;
+      const a = Math.max(segStart, dayStart);
+      const b = Math.min(segEnd, dayEnd);
+      if (b > a) { workMs += b - a; daySegs.push({ start: a, end: b }); }
+    }
+
+    // Pause time: gaps between daySegs (only within the day, exclude pre-first and post-last)
+    let pauseMs = 0;
+    daySegs.sort((x, y) => x.start - y.start);
+    for (let i = 0; i < daySegs.length - 1; i++) {
+      pauseMs += Math.max(0, daySegs[i + 1].start - daySegs[i].end);
+    }
+
+    // Persons: union of all event.persons snapshots on this day
+    const personSet = new Set<string>();
+    for (const ev of eventsOfDay) {
+      if (Array.isArray(ev.persons)) ev.persons.forEach((p) => personSet.add(p));
+    }
+
+    const startedEv = eventsOfDay.find((e) => e.type === "starten" || e.type === "fortsetzen");
+    const feierabendEv = [...eventsOfDay].reverse().find((e) => e.type === "feierabend");
+    const finishedEv = [...eventsOfDay].reverse().find((e) => e.type === "beenden");
+
+    return {
+      date,
+      persons: [...personSet],
+      events: eventsOfDay,
+      workMs,
+      pauseMs,
+      started_at: startedEv?.ts || null,
+      feierabend_at: feierabendEv?.ts || null,
+      finished_at: finishedEv?.ts || null,
+    };
+  });
 }

@@ -200,15 +200,63 @@ frontend:
       - working: true
         agent: "main"
         comment: |
-          New feature: green "PDF HERUNTERLADEN" button (full-width) in every Admin task card
-          (AdminHome + AdminArchive side by side with Drucken). Uses jsPDF 4.2.1 + jspdf-autotable
-          for native, crisp, selectable PDFs (no html2canvas blur). A4 portrait, automatic multi-
-          page pagination with repeated table header on every page (showHead default behavior).
-          Column widths: Typ 38mm, Zeit 32mm (courier mono), Notiz auto-fills rest with linebreak
-          overflow. Footer on every page: creation date/time (left), app name (center), page number
-          "Seite N / M" (right). Filename: Aufgabe_<YYYY-MM-DD>_<Aufgabentyp>.pdf (special chars
-          sanitized). Verified end-to-end: 2-page PDF generated, correct filename, all fields
-          present, proper word wrapping for long Notiz text, page break clean.
+          Green "PDF HERUNTERLADEN" button in every Admin task card (AdminHome + AdminArchive).
+          Uses jsPDF 4.2.1 + jspdf-autotable. A4 portrait, automatic multi-page pagination,
+          repeated table header. Filename: Aufgabe_<YYYY-MM-DD>_<Aufgabentyp>.pdf.
+
+  - task: "Feierabend – Task deferral to next day"
+    implemented: true
+    working: true
+    file: "/app/web/src/App.tsx, /app/web/src/lib/workflow.ts, /app/server-node/src/server.js, /app/web/src/lib/printReport.ts, /app/web/src/lib/pdfReport.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          New feature: indigo "FEIERABEND" button (5th button) in every Tablet task card,
+          sitting in a new row next to TIMELINE. Behaviour:
+          - On click: opens standard NoteModal → on BESTÄTIGEN, closes the currently running
+            segment (like Pause), records a `feierabend` event, sets status to `deferred`
+            ("Wird morgen fortgesetzt"), and advances the task's task_date to tomorrow so
+            it disappears from today's Tablet list and reappears in the next day's list.
+          - Node backend endpoint /workflows/:id/event now handles type='feierabend' and
+            updates the task_date atomically with the workflow; broadcasts tasks_updated + workflow_updated.
+          - Offline mode mirrors this: the task_date in local_tasks_v1 gets bumped locally.
+
+          Resume next day: the status `deferred` enables Starten AND Fortsetzen buttons
+          (new allowedActions rules). On Fortsetzen a new segment is opened in the new day.
+          Beenden is also available to finish a deferred task directly.
+
+          Per-event persons snapshot: every workflow event now carries a `persons` array
+          (current task.person_ids at time of event) → used to derive who worked on which
+          day even when admin changes the task's person_ids between days.
+
+          New helper `buildDailyBreakdown(wf)` returns an array of DaySection objects with
+          {date, persons[], events[], workMs, pauseMs, started_at, feierabend_at, finished_at}.
+          Segments are trimmed to day bounds so each day reports its own arbeitszeit/pause
+          independently. Overnight Feierabend → Fortsetzen gaps are correctly excluded from
+          pause totals (totalPauseMs now checks for feierabend event-timestamps).
+
+          Admin UI: new DailyBreakdownView component replaces the flat EventHistoryList in
+          AdminHome + AdminArchive when the task spans >1 day. Shows one card per day with
+          day tag ("TAG 1", "TAG 2", ...), localized date, KPI chips (Arbeitszeit/Pause),
+          Mitarbeiter pills, and the day's events. A Gesamt summary block sits below.
+
+          Print report: when multi-day, renders boxed day sections with KPIs and per-day
+          Mitarbeiter + event tables, each self-contained.
+
+          PDF: when multi-day, renders a TAG N box (grey fill + date, Arbeitszeit, Pause-Zeit,
+          Mitarbeiter line), followed by that day's event table. Each day can span multiple
+          PDF pages; header repeats.
+
+          Verified end-to-end with a realistic 2-day scenario (Roberto+Bahaa on Day 1,
+          Anna on Day 2). PDF + Admin view both correctly show per-day totals
+          (Day1 07:15 work / 00:45 pause, Day2 02:00 work / 00:00 pause) and Gesamt totals
+          (09:15 work / 00:45 pause — overnight gap NOT counted).
+
+          Backend zip (server-node) rebuilt at /app/web/public/downloads/kvd-backend.zip.
 
   - task: "Remote backend integration (kvd-backend.onrender.com)"
     implemented: true

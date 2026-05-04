@@ -22,8 +22,9 @@ import {
   STATUS_LABEL_DE,
   STATUS_COLOR,
   allowedActions,
+  buildDailyBreakdown,
 } from "./lib/workflow";
-import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent } from "./lib/workflow";
+import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent, DaySection } from "./lib/workflow";
 import { adminCorrectTimes, adminUndoFinish, addTimelineEntry } from "./lib/workflow";
 import { printTaskReport } from "./lib/printReport";
 import { downloadTaskPdf } from "./lib/pdfReport";
@@ -308,8 +309,8 @@ function AdminHome() {
                 </div>
               )}
 
-              {/* Vollständiger Verlauf aller Ereignisse (chronologisch) */}
-              <EventHistoryList events={wf.events || []} dark={true} />
+              {/* Vollständiger Verlauf aller Ereignisse (pro Tag gruppiert falls mehrtägig) */}
+              <DailyBreakdownView wf={wf} persons={persons} dark={true} />
 
               {/* Actions: Bearbeiten | Drucken | Archivieren | Löschen */}
               <div className="grid grid-cols-2 gap-2 mt-1">
@@ -587,6 +588,107 @@ const ToolBtn = ({ onClick, icon, label, primary }: any) => (
   </button>
 );
 
+// ============ DailyBreakdownView ============
+// Shows a task's events and times split by calendar day (dailyWorkLog).
+// Used in Admin and Archive when a task spans >1 day (Feierabend → Fortsetzen next day).
+function DailyBreakdownView({ wf, persons, dark = true }: { wf: TaskWorkflow; persons: SimpleItem[]; dark?: boolean }) {
+  const days: DaySection[] = buildDailyBreakdown(wf);
+  if (days.length === 0) return <EventHistoryList events={wf.events || []} dark={dark} />;
+  // If only one day, just show the regular event list (avoids clutter for single-day tasks).
+  if (days.length === 1) return <EventHistoryList events={wf.events || []} dark={dark} />;
+
+  const pn = (id: string) => persons.find((p) => p.id === id)?.name || id.slice(0, 6);
+  const fmtDE = (d: string) => {
+    try { return new Date(d + "T00:00:00").toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }); }
+    catch { return d; }
+  };
+
+  const txt = dark ? "#fff" : "#000";
+  const muted = dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.6)";
+  const border = dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)";
+  const subBg = dark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.03)";
+
+  return (
+    <div className="space-y-2 mt-1">
+      <div className="flex items-center justify-between px-1">
+        <div className="text-[10px] font-black tracking-[2px] uppercase opacity-60" style={{ color: txt }}>
+          Verlauf pro Tag · {days.length} Tage
+        </div>
+      </div>
+      {days.map((d, idx) => {
+        const isLast = idx === days.length - 1;
+        const headerColor = isLast ? (wf.status === "finished" ? EVENT_COLOR.beenden : EVENT_COLOR.feierabend) : EVENT_COLOR.feierabend;
+        return (
+          <div key={d.date} className="rounded-xl border overflow-hidden" style={{ borderColor: border, backgroundColor: subBg }}>
+            {/* Day header */}
+            <div className="flex items-center justify-between px-3 py-2" style={{ backgroundColor: headerColor + "18", borderBottom: `1px solid ${headerColor}33` }}>
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-[10px] font-black tracking-widest uppercase opacity-70" style={{ color: txt }}>Tag {idx + 1}</span>
+                <span className="text-sm font-black" style={{ color: headerColor }}>{fmtDE(d.date)}</span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] font-mono tabular-nums" style={{ color: txt }}>
+                <span title="Arbeitszeit" style={{ color: STATUS_COLOR.running }}>⏱ {formatDuration(d.workMs)}</span>
+                <span title="Pause-Zeit" style={{ color: EVENT_COLOR.pause }}>⏸ {formatDuration(d.pauseMs)}</span>
+              </div>
+            </div>
+            {/* Mitarbeiter of the day */}
+            <div className="px-3 py-2 flex flex-wrap gap-1.5 items-center" style={{ borderBottom: `1px solid ${border}` }}>
+              <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: muted }}>Mitarbeiter:</span>
+              {d.persons.length === 0 ? (
+                <span className="text-[11px] italic" style={{ color: muted }}>—</span>
+              ) : (
+                d.persons.map((pid) => (
+                  <span key={pid} className="text-[11px] px-2 py-0.5 rounded-full border font-bold" style={{ borderColor: border, color: txt, backgroundColor: dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)" }}>
+                    {pn(pid)}
+                  </span>
+                ))
+              )}
+            </div>
+            {/* Events of the day */}
+            <div className="p-2 space-y-1.5">
+              {d.events.length === 0 ? (
+                <div className="text-[11px] italic px-2" style={{ color: muted }}>Keine Ereignisse an diesem Tag.</div>
+              ) : d.events.map((ev, i) => {
+                const c = EVENT_COLOR[ev.type] || "#888";
+                const undone = !!ev.undone;
+                return (
+                  <div key={i} className="flex gap-2.5 items-start rounded-lg p-2" style={{ backgroundColor: c + "10", borderLeft: `3px solid ${c}`, opacity: undone ? 0.55 : 1 }}>
+                    <div className="w-2 h-2 rounded-full mt-1.5" style={{ backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-2 flex-wrap">
+                        <span className="text-xs font-black tracking-wide" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>{EVENT_LABEL[ev.type] || ev.type}</span>
+                        {undone && <span className="text-[10px] font-bold text-brand-yellow">(zurückgenommen)</span>}
+                        <span className="text-[10px] font-mono opacity-70" style={{ color: txt }}>{new Date(ev.ts).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}</span>
+                      </div>
+                      {ev.note ? (
+                        <div className="text-xs italic mt-0.5" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>„{ev.note}"</div>
+                      ) : (
+                        <div className="text-[10px] italic opacity-40" style={{ color: txt }}>(keine Notiz)</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      {/* Totals */}
+      <div className="grid grid-cols-2 gap-2 rounded-xl border px-3 py-2" style={{ borderColor: border, backgroundColor: subBg }}>
+        <div>
+          <div className="text-[9px] font-bold tracking-widest uppercase" style={{ color: muted }}>Gesamt-Arbeitszeit</div>
+          <div className="font-mono tabular-nums text-base font-black" style={{ color: STATUS_COLOR.running }}>{formatDuration(totalWorkMs(wf))}</div>
+        </div>
+        <div>
+          <div className="text-[9px] font-bold tracking-widest uppercase" style={{ color: muted }}>Gesamt-Pause-Zeit</div>
+          <div className="font-mono tabular-nums text-base font-black" style={{ color: EVENT_COLOR.pause }}>{formatDuration(totalPauseMs(wf))}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ============ Admin Create / Edit ============
 function AdminCreate() {
   const nav = useNavigate();
@@ -851,7 +953,7 @@ function AdminArchive() {
                       <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: EVENT_COLOR.pause }}>{formatDuration(pauseMs)}</div>
                     </div>
                   </div>
-                  <EventHistoryList events={wf.events || []} dark={true} />
+                  <DailyBreakdownView wf={wf} persons={persons} dark={true} />
                 </>
               )}
               {/* Drucken + PDF buttons (always visible in Archive) */}
@@ -1215,8 +1317,18 @@ function Tablet() {
     const m = modal;
     const noteVal = note.trim();
     setModal(null); setNote("");
-    const wf = await recordEvent(m.taskId, m.type, noteVal, m.taskName);
+    const task = tasks.find((x) => x.id === m.taskId);
+    const personsSnap = task?.person_ids ? [...task.person_ids] : undefined;
+    const wf = await recordEvent(m.taskId, m.type, noteVal, m.taskName, personsSnap);
     setWorkflows((prev) => ({ ...prev, [m.taskId]: wf }));
+    // On Feierabend: reload today's tasks — the task's task_date got bumped to tomorrow,
+    // so it will disappear from today's list until a WS refresh / next day.
+    if (m.type === "feierabend") {
+      try {
+        const r = await api<{ tasks: Task[] }>("/tasks/today");
+        setTasks(r.tasks);
+      } catch {}
+    }
   };
 
   const openTimeline = (task: Task) => {
@@ -1334,7 +1446,7 @@ function Tablet() {
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
                   <ActionBtn label="Vorbereiten" color={EVENT_COLOR.vorbereiten} disabled={!allowed.vorbereiten} onClick={() => openAction(t, "vorbereiten")} dark={dark} />
                   <ActionBtn label="Starten" color={EVENT_COLOR.starten} disabled={!allowed.starten} onClick={() => openAction(t, "starten")} dark={dark} />
-                  {wfStatus === "paused" ? (
+                  {wfStatus === "paused" || wfStatus === "deferred" ? (
                     <ActionBtn label="Fortsetzen" color={EVENT_COLOR.fortsetzen} disabled={!allowed.fortsetzen} onClick={() => openAction(t, "fortsetzen")} dark={dark} />
                   ) : (
                     <ActionBtn label="Pause" color={EVENT_COLOR.pause} disabled={!allowed.pause} onClick={() => openAction(t, "pause")} dark={dark} />
@@ -1342,18 +1454,29 @@ function Tablet() {
                   <ActionBtn label="Beenden" color={EVENT_COLOR.beenden} disabled={!allowed.beenden} onClick={() => openAction(t, "beenden")} dark={dark} />
                 </div>
 
-                {/* Timeline button (informativer Zeit-Marker, ändert NICHT den Status) */}
-                <button
-                  onClick={() => openTimeline(t)}
-                  className="w-full h-11 mt-1 rounded-xl border-2 font-black text-xs tracking-[2px] active:scale-95 transition flex items-center justify-center gap-2"
-                  style={{
-                    borderColor: EVENT_COLOR.timeline,
-                    backgroundColor: EVENT_COLOR.timeline + "15",
-                    color: EVENT_COLOR.timeline,
-                  }}
-                >
-                  <Icon d={ICONS.timeline} size={15} color={EVENT_COLOR.timeline} /> TIMELINE
-                </button>
+                {/* Feierabend + Timeline row (Mitarbeiter-Aktionen, informativ) */}
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  <button
+                    onClick={() => openAction(t, "feierabend")}
+                    disabled={!allowed.feierabend}
+                    className="h-11 rounded-xl border-2 font-black text-xs tracking-[2px] active:scale-95 transition flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{
+                      borderColor: EVENT_COLOR.feierabend,
+                      backgroundColor: allowed.feierabend ? EVENT_COLOR.feierabend : (dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)"),
+                      color: allowed.feierabend ? "#FFFFFF" : (dark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)"),
+                      boxShadow: allowed.feierabend ? `0 4px 14px ${EVENT_COLOR.feierabend}66` : "none",
+                    }}
+                  >
+                    FEIERABEND
+                  </button>
+                  <button
+                    onClick={() => openTimeline(t)}
+                    className="h-11 rounded-xl border-2 font-black text-xs tracking-[2px] active:scale-95 transition flex items-center justify-center gap-2"
+                    style={{ borderColor: EVENT_COLOR.timeline, backgroundColor: EVENT_COLOR.timeline + "15", color: EVENT_COLOR.timeline }}
+                  >
+                    <Icon d={ICONS.timeline} size={15} color={EVENT_COLOR.timeline} /> TIMELINE
+                  </button>
+                </div>
               </div>
             );
           })}
