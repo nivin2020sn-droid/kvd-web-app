@@ -26,6 +26,7 @@ import {
 import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent } from "./lib/workflow";
 import { adminCorrectTimes, adminUndoFinish, addTimelineEntry } from "./lib/workflow";
 import { printTaskReport } from "./lib/printReport";
+import { downloadTaskPdf } from "./lib/pdfReport";
 import { useAdminName, setAdminName } from "./lib/adminName";
 import { useAdminTheme, setAdminTheme, resolveBg, isDark as isDarkHex } from "./lib/adminTheme";
 import type { ThemeMode } from "./lib/adminTheme";
@@ -325,6 +326,14 @@ function AdminHome() {
                   <Icon d={ICONS.trash} size={14} color="#FF3B30" /> Löschen
                 </button>
               </div>
+
+              {/* PDF herunterladen (full-width, prominent) */}
+              <button
+                onClick={() => downloadTaskPdf(t, wf, persons)}
+                className="w-full h-11 rounded-lg border-2 border-brand-green/70 bg-brand-green/10 text-brand-green text-xs font-black tracking-[2px] active:scale-95 transition flex items-center justify-center gap-2 mt-1"
+              >
+                <Icon d={ICONS.pdf} size={15} color="#00E676" /> PDF HERUNTERLADEN
+              </button>
 
               {/* Admin-Zeit-Aktionen */}
               <div className={`grid ${wfStatus === "finished" ? "grid-cols-2" : "grid-cols-1"} gap-2`}>
@@ -845,13 +854,21 @@ function AdminArchive() {
                   <EventHistoryList events={wf.events || []} dark={true} />
                 </>
               )}
-              {/* Drucken button (always visible in Archive) */}
-              <button
-                onClick={() => printTaskReport(t, wf || null, persons)}
-                className="w-full h-10 rounded-lg border border-brand-blue/60 bg-blue-500/10 text-brand-blue text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5 mt-1"
-              >
-                <Icon d={ICONS.print} size={14} color="#3B82F6" /> Drucken
-              </button>
+              {/* Drucken + PDF buttons (always visible in Archive) */}
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <button
+                  onClick={() => printTaskReport(t, wf || null, persons)}
+                  className="h-10 rounded-lg border border-brand-blue/60 bg-blue-500/10 text-brand-blue text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5"
+                >
+                  <Icon d={ICONS.print} size={14} color="#3B82F6" /> Drucken
+                </button>
+                <button
+                  onClick={() => downloadTaskPdf(t, wf || null, persons)}
+                  className="h-10 rounded-lg border-2 border-brand-green/70 bg-brand-green/10 text-brand-green text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5"
+                >
+                  <Icon d={ICONS.pdf} size={14} color="#00E676" /> PDF herunterladen
+                </button>
+              </div>
             </div>
           );
         })}

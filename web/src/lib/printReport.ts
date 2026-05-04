@@ -1,29 +1,32 @@
+// Professional print-only report. Completely isolated from the app styles.
+// - Pure black on white, subtle borders, no shadows/bgs.
+// - A4 with @page margins. @media print hides the top bar & uses optimal font size.
+// - Notiz column uses word-break + break-word; table-layout: auto.
+// - Events are chronologically sorted and include Timeline entries.
+
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import {
-  EVENT_LABEL,
-  EVENT_COLOR,
-  STATUS_LABEL_DE,
-  totalWorkMs,
-  formatDuration,
-  formatDateTime,
-  formatTime,
-} from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration } from "./workflow";
 
 function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
-/** Total pause time in ms (mirror of totalPauseMs in workflow.ts). */
-function totalPauseMs(wf: TaskWorkflow): number {
-  const segs = wf.segments || [];
-  if (segs.length < 2) return 0;
-  let total = 0;
-  for (let i = 0; i < segs.length - 1; i++) {
-    const cur = segs[i], nxt = segs[i + 1];
-    if (cur.end && nxt.start) total += new Date(nxt.start).getTime() - new Date(cur.end).getTime();
-  }
-  return total;
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }); }
+  catch { return "—"; }
+}
+function fmtTime24(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }); }
+  catch { return "—"; }
+}
+
+/** Build a chronological list combining workflow events and timeline events. */
+function buildEventRows(wf: TaskWorkflow | null): WorkflowEvent[] {
+  if (!wf || !wf.events) return [];
+  return [...wf.events].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
 }
 
 export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[]) {
@@ -31,127 +34,336 @@ export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: Si
   const personNames = task.person_ids.map(pn).join(", ") || "—";
   const workMs = wf ? totalWorkMs(wf) : 0;
   const pauseMs = wf ? totalPauseMs(wf) : 0;
-  const events = wf?.events || [];
-  const timelines = events.filter((e) => e.type === "timeline");
-  const adminEvents = events.filter((e) => e.type === "admin_zeitkorrektur" || e.type === "admin_beenden_rueckgaengig");
-  const workflowEvents = events.filter((e) => ["vorbereiten", "starten", "pause", "fortsetzen", "beenden"].includes(e.type));
-  const now = new Date();
-  const title = `Aufgabe ${esc(task.task_type)} · Haus ${esc(task.haus)} · Station ${esc(task.station)}`;
+  const events = buildEventRows(wf);
+  const title = `${task.task_type}`;
+  const datumStr = fmtDate(task.task_date || new Date().toISOString());
+  const statusLabel = wf ? STATUS_LABEL_DE[wf.status] : "—";
 
-  const row = (label: string, value: string) =>
+  const infoRow = (label: string, value: string) =>
     `<tr><th>${esc(label)}</th><td>${value}</td></tr>`;
 
-  const eventRow = (ev: WorkflowEvent) => {
-    const c = EVENT_COLOR[ev.type] || "#444";
-    const label = EVENT_LABEL[ev.type] || ev.type;
-    const undoneTag = ev.undone ? ` <span class="tag">(zurückgenommen)</span>` : "";
+  const eventRows = events.map((ev) => {
+    const typeLabel = EVENT_LABEL[ev.type] || ev.type;
+    const undone = ev.undone ? " (zurückgenommen)" : "";
     const corr = ev.corrections && ev.corrections.length
-      ? `<div class="corrections">${ev.corrections.map((co) => `↳ ${esc(EVENT_LABEL[co.target_type])}: ${esc(new Date(co.old_ts).toLocaleTimeString("de-DE", {hour:"2-digit",minute:"2-digit"}))} → ${esc(new Date(co.new_ts).toLocaleTimeString("de-DE", {hour:"2-digit",minute:"2-digit"}))}</div>`).join("")}</div>`
+      ? `<div class="corrections">${ev.corrections.map((co) => `&bull; ${esc(EVENT_LABEL[co.target_type])}: ${esc(fmtTime24(co.old_ts))} &rarr; ${esc(fmtTime24(co.new_ts))}`).join("<br>")}</div>`
       : "";
-    return `<tr style="${ev.undone ? "opacity:.55;text-decoration:line-through;" : ""}">
-      <td class="dot" style="background:${c};"></td>
-      <td><strong>${esc(label)}</strong>${undoneTag}</td>
-      <td class="mono">${esc(formatDateTime(ev.ts))}</td>
-      <td>${ev.note ? `„${esc(ev.note)}"` : `<em class="muted">—</em>`}${corr}</td>
-      <td class="mono muted">${esc(ev.created_by || "")}</td>
-    </tr>`;
-  };
+    const noteText = ev.note ? esc(ev.note) : `<span class="muted">—</span>`;
+    const createdBy = ev.created_by ? ` <span class="muted">(${esc(ev.created_by)})</span>` : "";
+    const cls = ev.undone ? "undone" : "";
+    return `
+      <tr class="${cls}">
+        <td class="col-typ"><strong>${esc(typeLabel)}</strong>${esc(undone)}${createdBy}</td>
+        <td class="col-zeit">${esc(fmtTime24(ev.ts))}<div class="muted small">${esc(fmtDate(ev.ts))}</div></td>
+        <td class="col-notiz">${noteText}${corr}</td>
+      </tr>`;
+  }).join("");
+
+  const now = new Date();
+  const printDateTime = `${now.toLocaleDateString("de-DE")} · ${now.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
 
   const html = `<!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<title>${esc(title)}</title>
+<title>Aufgabe ${esc(title)} · ${esc(datumStr)}</title>
 <style>
-  @page { size: A4; margin: 14mm; }
+  /* ---- reset ---- */
   * { box-sizing: border-box; }
-  body { font-family: Inter, -apple-system, "Segoe UI", Roboto, sans-serif; color: #111; background: #fff; margin: 0; padding: 0; font-size: 12px; line-height: 1.45; }
-  h1 { font-size: 20px; margin: 0 0 4px 0; font-weight: 800; letter-spacing: -0.01em; }
-  h2 { font-size: 14px; margin: 20px 0 8px 0; padding-bottom: 4px; border-bottom: 2px solid #111; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
-  .sub { color: #666; margin-bottom: 20px; font-size: 11px; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 10px; page-break-inside: avoid; }
-  table th, table td { padding: 6px 8px; border-bottom: 1px solid #e3e3e3; text-align: left; vertical-align: top; }
-  table th { background: #f6f7f9; font-weight: 700; width: 32%; }
-  .status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 700; font-size: 11px; }
-  .kpi { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 14px; }
-  .kpi .cell { border: 1px solid #cfcfcf; border-radius: 6px; padding: 8px 10px; }
-  .kpi .cell .lbl { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-  .kpi .cell .val { font-family: ui-monospace, Menlo, monospace; font-size: 15px; font-weight: 700; }
-  .events th { font-weight: 700; background: #111; color: #fff; letter-spacing: 0.5px; text-transform: uppercase; font-size: 10px; }
-  .events td.dot { width: 14px; padding: 0; }
-  .events td.dot div { width: 10px; height: 10px; border-radius: 50%; }
-  .mono { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
-  .muted { color: #888; }
-  .tag { font-size: 10px; color: #B18200; font-weight: 700; margin-left: 4px; }
-  .corrections { font-size: 10px; color: #555; margin-top: 2px; }
-  .footer { margin-top: 24px; font-size: 10px; color: #666; border-top: 1px solid #ddd; padding-top: 8px; }
-  @media print { .no-print { display: none; } body { font-size: 11px; } }
-  .no-print { position: fixed; top: 12px; right: 12px; }
-  .no-print button { padding: 8px 16px; background: #111; color: #fff; border: 0; border-radius: 6px; font-weight: 700; cursor: pointer; margin-left: 6px; }
+  html, body { margin: 0; padding: 0; background: #fff; color: #000; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ---- Page setup ---- */
+  @page {
+    size: A4;
+    margin: 18mm 16mm 18mm 16mm;
+  }
+
+  .sheet {
+    max-width: 178mm;
+    margin: 0 auto;
+    padding: 14mm 12mm;
+  }
+
+  /* ---- Header ---- */
+  .header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    border-bottom: 2px solid #000;
+    padding-bottom: 10px;
+    margin-bottom: 18px;
+  }
+  .header .title-block { flex: 1; min-width: 0; }
+  .header h1 {
+    font-size: 22pt;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px 0;
+    word-break: break-word;
+  }
+  .header .worker {
+    font-size: 11pt;
+    color: #333;
+    margin: 4px 0 0 0;
+  }
+  .header .meta {
+    text-align: right;
+    font-size: 10pt;
+    white-space: nowrap;
+    color: #000;
+  }
+  .header .meta .date-big {
+    font-size: 13pt;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .header .meta .status {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 3px 10px;
+    border: 1px solid #000;
+    border-radius: 3px;
+    font-weight: 700;
+    font-size: 9.5pt;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  /* ---- Section titles ---- */
+  h2 {
+    font-size: 10.5pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin: 22px 0 8px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #333;
+    page-break-after: avoid;
+  }
+
+  /* ---- Info table ---- */
+  table.info {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    page-break-inside: avoid;
+  }
+  table.info th, table.info td {
+    padding: 7px 10px;
+    border-bottom: 1px solid #ccc;
+    text-align: left;
+    vertical-align: top;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  table.info th {
+    width: 38%;
+    background: #f5f5f5;
+    font-weight: 700;
+    color: #000;
+    font-size: 10pt;
+  }
+  table.info td { font-size: 11pt; }
+
+  /* ---- Events table (the important one: prevent Notiz compression) ---- */
+  table.events {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;          /* flexible widths */
+    margin-top: 4px;
+  }
+  table.events thead th {
+    background: #000;
+    color: #fff;
+    font-weight: 700;
+    font-size: 9.5pt;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 8px 10px;
+    text-align: left;
+    border: 0;
+  }
+  table.events tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #ddd;
+    vertical-align: top;
+    line-height: 1.5;
+    font-size: 11pt;
+  }
+  /* column widths + text wrap behaviour */
+  table.events .col-typ   { width: 120px;  min-width: 120px;  white-space: normal; word-break: break-word; overflow-wrap: break-word; }
+  table.events .col-zeit  { width: 160px;  min-width: 140px;  white-space: normal; font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+  table.events .col-notiz { width: auto;   max-width: none;   white-space: normal; word-break: break-word; overflow-wrap: break-word; hyphens: auto; }
+  table.events tr.undone td { color: #666; text-decoration: line-through; }
+  table.events tr { page-break-inside: avoid; }    /* keep a single row intact */
+  table.events .corrections {
+    font-size: 9.5pt;
+    color: #555;
+    margin-top: 4px;
+    line-height: 1.4;
+  }
+
+  /* ---- Summary row (work/pause totals) ---- */
+  .totals {
+    display: flex;
+    gap: 12px;
+    margin: 8px 0 0 0;
+    page-break-inside: avoid;
+  }
+  .totals .cell {
+    flex: 1;
+    border: 1px solid #000;
+    padding: 8px 12px;
+  }
+  .totals .cell .lbl {
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #333;
+  }
+  .totals .cell .val {
+    font-size: 14pt;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    margin-top: 2px;
+  }
+
+  /* ---- helpers ---- */
+  .muted { color: #666; }
+  .small { font-size: 9pt; }
+
+  /* ---- Footer ---- */
+  .footer {
+    margin-top: 28px;
+    padding-top: 8px;
+    border-top: 1px solid #ccc;
+    font-size: 9pt;
+    color: #555;
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+  }
+
+  /* ---- Print-only: hide the toolbar ---- */
+  .toolbar {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    z-index: 99;
+    background: #fff;
+    border: 1px solid #000;
+    border-radius: 4px;
+    padding: 6px;
+    display: flex;
+    gap: 6px;
+  }
+  .toolbar button {
+    font: inherit;
+    padding: 8px 16px;
+    background: #000;
+    color: #fff;
+    border: 0;
+    border-radius: 3px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .toolbar button.secondary {
+    background: #fff;
+    color: #000;
+    border: 1px solid #000;
+  }
+
+  @media print {
+    .toolbar, .no-print { display: none !important; }
+    body { font-size: 10.5pt; }
+    .sheet { padding: 0; max-width: none; }
+    a, a:visited { color: #000; text-decoration: none; }
+    table.events thead { display: table-header-group; } /* repeat header on page break */
+    table.info  thead { display: table-header-group; }
+    tr, img { page-break-inside: avoid; }
+    h1, h2, h3 { page-break-after: avoid; }
+  }
 </style>
 </head>
 <body>
-<div class="no-print"><button onclick="window.print()">Drucken</button><button onclick="window.close()">Schließen</button></div>
-
-<h1>${esc(task.task_type)}</h1>
-<div class="sub">Haus ${esc(task.haus)} · Station ${esc(task.station)} · ${esc(task.task_date || new Date().toISOString().slice(0,10))}</div>
-
-<h2>1. Aufgaben-Daten</h2>
-<table>
-  ${row("Datum", esc(task.task_date || ""))}
-  ${row("Aufgabentyp", esc(task.task_type))}
-  ${row("Haus", esc(task.haus))}
-  ${row("Station", esc(task.station))}
-  ${row("Mitarbeiter", esc(personNames))}
-  ${row("Beschreibung", esc(task.description || "—"))}
-  ${row("Zeit von", esc(task.time_from))}
-  ${row("Zeit bis", esc(task.time_to))}
-  ${row("Status", `<span class="status" style="background:${EVENT_COLOR["starten"]}22;color:${wf ? "#111" : "#666"};border:1px solid #aaa;">${esc(wf ? STATUS_LABEL_DE[wf.status] : "Bereit")}</span>`)}
-</table>
-
-<h2>2. Zeit-Informationen</h2>
-<table>
-  ${row("Vorbereitet", esc(formatTime(wf?.prepared_at)))}
-  ${row("Gestartet", esc(formatTime(wf?.started_at)))}
-  ${row("Pausiert seit (aktuell)", esc(wf?.status === "paused" ? formatTime(wf?.paused_at) : "—"))}
-  ${row("Beendet", esc(formatTime(wf?.finished_at)))}
-</table>
-<div class="kpi">
-  <div class="cell"><div class="lbl">Gesamt-Arbeitszeit</div><div class="val">${esc(formatDuration(workMs))}</div></div>
-  <div class="cell"><div class="lbl">Pause-Zeit</div><div class="val">${esc(formatDuration(pauseMs))}</div></div>
-  <div class="cell"><div class="lbl">Pause-Anzahl</div><div class="val">${workflowEvents.filter(e => e.type === 'pause').length}</div></div>
-  <div class="cell"><div class="lbl">Ereignisse gesamt</div><div class="val">${events.length}</div></div>
+<div class="toolbar no-print">
+  <button onclick="window.print()">Drucken</button>
+  <button class="secondary" onclick="window.close()">Schließen</button>
 </div>
 
-<h2>3. Verlauf · Notizen</h2>
-${workflowEvents.length === 0 ? '<p class="muted">Keine Arbeits-Ereignisse vorhanden.</p>' : `
-<table class="events">
-  <thead><tr><th></th><th>Ereignis</th><th>Zeit</th><th>Notiz</th><th>Von</th></tr></thead>
-  <tbody>${[...workflowEvents].sort((a,b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()).map(eventRow).join("")}</tbody>
-</table>`}
+<div class="sheet">
 
-<h2>4. Timeline (Mitarbeiter-Markierungen)</h2>
-${timelines.length === 0 ? '<p class="muted">Keine Timeline-Einträge.</p>' : `
-<table class="events">
-  <thead><tr><th></th><th>Typ</th><th>Zeit</th><th>Notiz</th><th>Von</th></tr></thead>
-  <tbody>${[...timelines].sort((a,b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()).map(eventRow).join("")}</tbody>
-</table>`}
+  <div class="header">
+    <div class="title-block">
+      <h1>${esc(title)}</h1>
+      <div class="worker">${esc(personNames)}</div>
+    </div>
+    <div class="meta">
+      <div class="date-big">${esc(datumStr)}</div>
+      <div class="small muted">${esc(task.time_from)} &ndash; ${esc(task.time_to)}</div>
+      <div class="status">${esc(statusLabel)}</div>
+    </div>
+  </div>
 
-<h2>5. Admin-Änderungen</h2>
-${adminEvents.length === 0 ? '<p class="muted">Keine Admin-Änderungen.</p>' : `
-<table class="events">
-  <thead><tr><th></th><th>Aktion</th><th>Zeit</th><th>Notiz</th><th>Von</th></tr></thead>
-  <tbody>${[...adminEvents].sort((a,b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()).map(eventRow).join("")}</tbody>
-</table>`}
+  <h2>Aufgaben-Informationen</h2>
+  <table class="info">
+    <tbody>
+      ${infoRow("Datum", esc(datumStr))}
+      ${infoRow("Aufgabentyp", esc(task.task_type))}
+      ${infoRow("Haus", esc(task.haus))}
+      ${infoRow("Station", esc(task.station))}
+      ${infoRow("Mitarbeiter", esc(personNames))}
+      ${infoRow("Beschreibung", task.description ? esc(task.description) : '<span class="muted">—</span>')}
+      ${infoRow("Zeit von", esc(task.time_from))}
+      ${infoRow("Zeit bis", esc(task.time_to))}
+      ${infoRow("Status", esc(statusLabel))}
+      ${infoRow("Gesamt-Arbeitszeit", `<strong>${esc(formatDuration(workMs))}</strong>`)}
+      ${infoRow("Pause-Zeit", `<strong>${esc(formatDuration(pauseMs))}</strong>`)}
+    </tbody>
+  </table>
 
-<div class="footer">
-  Gedruckt am ${esc(now.toLocaleDateString("de-DE"))} um ${esc(now.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))} · Reinigung Aufgabenverwaltung
+  <h2>Verlauf &amp; Timeline</h2>
+  ${events.length === 0 ? '<p class="muted">Keine Ereignisse vorhanden.</p>' : `
+  <table class="events">
+    <thead>
+      <tr>
+        <th class="col-typ">Typ</th>
+        <th class="col-zeit">Zeit</th>
+        <th class="col-notiz">Notiz</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${eventRows}
+    </tbody>
+  </table>
+  `}
+
+  <div class="footer">
+    <div>Gedruckt am ${esc(printDateTime)}</div>
+    <div>Reinigung &middot; Aufgabenbericht</div>
+  </div>
+
 </div>
-<script>window.addEventListener('load', () => setTimeout(() => window.print(), 300));</script>
+
+<script>
+  window.addEventListener('load', () => {
+    // Leave the dialog-trigger out so the user can review the document first.
+    // They click the Drucken button to trigger print.
+  });
+</script>
 </body>
 </html>`;
 
-  const w = window.open("", "_blank", "width=900,height=1200");
+  const w = window.open("", "_blank", "width=980,height=1280");
   if (!w) { alert("Popup blockiert. Bitte Popups für diese Seite erlauben."); return; }
   w.document.open();
   w.document.write(html);

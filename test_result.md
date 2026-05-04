@@ -177,18 +177,38 @@ frontend:
       - working: true
         agent: "main"
         comment: |
-          Added a blue "Drucken" button next to Bearbeiten in AdminHome task cards (new 2x2 grid:
-          Bearbeiten | Drucken | Archivieren | Löschen) and also to every archived task card in
-          AdminArchive. Clicking opens a new browser window/tab with an A4-formatted HTML report
-          (black on white, printable via Ctrl+P or saved as PDF). The report contains all
-          5 required sections: 1) Aufgaben-Daten (Datum, Aufgabentyp, Haus, Station, Mitarbeiter,
-          Beschreibung, Zeit von/bis, Status), 2) Zeit-Informationen with KPI tiles
-          (Gesamt-Arbeitszeit, Pause-Zeit, Pause-Anzahl, Ereignisse gesamt), 3) Verlauf · Notizen
-          with every workflow event (vorbereiten/starten/pause/fortsetzen/beenden) chronologically
-          sorted with color dots, 4) Timeline (Mitarbeiter-Markierungen), 5) Admin-Änderungen
-          (Zeitkorrektur, Beenden rückgängig). Verified e2e: the popup opens with correct title
-          "Aufgabe Reinigung Kueche · Haus A · Station 10", all 5 sections render, timeline entry
-          is present with created_by=Mitarbeiter, undone events are crossed out.
+          Fully redesigned the print layout. Now a professional A4 report: pure black on white,
+          @media print isolation, @page A4 margins, zero dark backgrounds, no shadows, minimal
+          borders. Header: big task title on the left + worker name subtitle, right side shows
+          Datum (big), time range, and a clean STATUS pill. One table for Aufgaben-Informationen
+          (Datum, Aufgabentyp, Haus, Station, Mitarbeiter, Beschreibung, Zeit von/bis, Status,
+          Gesamt-Arbeitszeit, Pause-Zeit). Second table for Verlauf & Timeline with exactly the
+          user-specified column widths: Typ (120px fixed) | Zeit (160px fixed, tabular-nums) |
+          Notiz (auto/flex, white-space:normal, word-break:break-word, overflow-wrap:break-word,
+          hyphens:auto, padding 10-12px, line-height 1.5). Events chronologically sorted,
+          Timeline and Workflow events merged. Page-break-inside:avoid on rows, page-break
+          repeated thead for multi-page. Verified visually via screenshot analysis.
+
+  - task: "PDF herunterladen – direct client-side PDF generation"
+    implemented: true
+    working: true
+    file: "/app/web/src/lib/pdfReport.ts, /app/web/src/App.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          New feature: green "PDF HERUNTERLADEN" button (full-width) in every Admin task card
+          (AdminHome + AdminArchive side by side with Drucken). Uses jsPDF 4.2.1 + jspdf-autotable
+          for native, crisp, selectable PDFs (no html2canvas blur). A4 portrait, automatic multi-
+          page pagination with repeated table header on every page (showHead default behavior).
+          Column widths: Typ 38mm, Zeit 32mm (courier mono), Notiz auto-fills rest with linebreak
+          overflow. Footer on every page: creation date/time (left), app name (center), page number
+          "Seite N / M" (right). Filename: Aufgabe_<YYYY-MM-DD>_<Aufgabentyp>.pdf (special chars
+          sanitized). Verified end-to-end: 2-page PDF generated, correct filename, all fields
+          present, proper word wrapping for long Notiz text, page break clean.
 
   - task: "Remote backend integration (kvd-backend.onrender.com)"
     implemented: true
