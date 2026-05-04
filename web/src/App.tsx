@@ -24,7 +24,8 @@ import {
   allowedActions,
 } from "./lib/workflow";
 import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent } from "./lib/workflow";
-import { adminCorrectTimes, adminUndoFinish } from "./lib/workflow";
+import { adminCorrectTimes, adminUndoFinish, addTimelineEntry } from "./lib/workflow";
+import { printTaskReport } from "./lib/printReport";
 import { useAdminName, setAdminName } from "./lib/adminName";
 import { useAdminTheme, setAdminTheme, resolveBg, isDark as isDarkHex } from "./lib/adminTheme";
 import type { ThemeMode } from "./lib/adminTheme";
@@ -309,10 +310,13 @@ function AdminHome() {
               {/* Vollständiger Verlauf aller Ereignisse (chronologisch) */}
               <EventHistoryList events={wf.events || []} dark={true} />
 
-              {/* Actions: Bearbeiten | Archivieren | Löschen */}
-              <div className="grid grid-cols-3 gap-2 mt-1">
+              {/* Actions: Bearbeiten | Drucken | Archivieren | Löschen */}
+              <div className="grid grid-cols-2 gap-2 mt-1">
                 <button onClick={() => editOne(t.id)} className="h-10 rounded-lg border border-brand-yellow/60 bg-brand-yellow/10 text-brand-yellow text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
                   <Icon d={ICONS.edit} size={14} color="#FFD600" /> Bearbeiten
+                </button>
+                <button onClick={() => printTaskReport(t, wf, persons)} className="h-10 rounded-lg border border-brand-blue/60 bg-blue-500/10 text-brand-blue text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
+                  <Icon d={ICONS.print} size={14} color="#3B82F6" /> Drucken
                 </button>
                 <button onClick={() => archiveOne(t.id)} className="h-10 rounded-lg border border-brand-orange/60 bg-orange-500/10 text-brand-orange text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
                   <Icon d={ICONS.archive} size={14} color="#FF9500" /> Archivieren
@@ -841,6 +845,13 @@ function AdminArchive() {
                   <EventHistoryList events={wf.events || []} dark={true} />
                 </>
               )}
+              {/* Drucken button (always visible in Archive) */}
+              <button
+                onClick={() => printTaskReport(t, wf || null, persons)}
+                className="w-full h-10 rounded-lg border border-brand-blue/60 bg-blue-500/10 text-brand-blue text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5 mt-1"
+              >
+                <Icon d={ICONS.print} size={14} color="#3B82F6" /> Drucken
+              </button>
             </div>
           );
         })}
@@ -1136,6 +1147,11 @@ function Tablet() {
   const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
   const [modal, setModal] = useState<null | { taskId: string; taskName: string; type: EventType }>(null);
   const [note, setNote] = useState("");
+  // Timeline modal state (Mitarbeiter kann Zeit + Notiz markieren)
+  const [tlModal, setTlModal] = useState<null | { taskId: string; taskName: string }>(null);
+  const [tlTime, setTlTime] = useState("");
+  const [tlNote, setTlNote] = useState("");
+  const [tlBusy, setTlBusy] = useState(false);
 
   useEffect(() => { const u = subscribeServerConfig((c) => setOnline(!!c)); return () => { u(); }; }, []);
   const load = async () => {
@@ -1184,6 +1200,28 @@ function Tablet() {
     setModal(null); setNote("");
     const wf = await recordEvent(m.taskId, m.type, noteVal, m.taskName);
     setWorkflows((prev) => ({ ...prev, [m.taskId]: wf }));
+  };
+
+  const openTimeline = (task: Task) => {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    setTlTime(`${hh}:${mm}`);
+    setTlNote("");
+    setTlModal({ taskId: task.id, taskName: task.task_type });
+  };
+
+  const confirmTimeline = async () => {
+    if (!tlModal) return;
+    if (!/^\d{2}:\d{2}$/.test(tlTime)) { alert("Bitte Uhrzeit im Format HH:MM eingeben"); return; }
+    setTlBusy(true);
+    try {
+      const wf = await addTimelineEntry(tlModal.taskId, tlTime, tlNote.trim(), tlModal.taskName);
+      setWorkflows((prev) => ({ ...prev, [tlModal.taskId]: wf }));
+      setTlModal(null); setTlNote(""); setTlTime("");
+    } catch (e: any) {
+      alert("Fehler: " + (e?.message || ""));
+    } finally { setTlBusy(false); }
   };
 
   const bgType = s?.background_type || "preset"; const bgVal = s?.background_value || "dark";
@@ -1286,6 +1324,19 @@ function Tablet() {
                   )}
                   <ActionBtn label="Beenden" color={EVENT_COLOR.beenden} disabled={!allowed.beenden} onClick={() => openAction(t, "beenden")} dark={dark} />
                 </div>
+
+                {/* Timeline button (informativer Zeit-Marker, ändert NICHT den Status) */}
+                <button
+                  onClick={() => openTimeline(t)}
+                  className="w-full h-11 mt-1 rounded-xl border-2 font-black text-xs tracking-[2px] active:scale-95 transition flex items-center justify-center gap-2"
+                  style={{
+                    borderColor: EVENT_COLOR.timeline,
+                    backgroundColor: EVENT_COLOR.timeline + "15",
+                    color: EVENT_COLOR.timeline,
+                  }}
+                >
+                  <Icon d={ICONS.timeline} size={15} color={EVENT_COLOR.timeline} /> TIMELINE
+                </button>
               </div>
             );
           })}
@@ -1300,6 +1351,18 @@ function Tablet() {
           setNote={setNote}
           onCancel={() => { setModal(null); setNote(""); }}
           onConfirm={confirmAction}
+        />
+      )}
+      {tlModal && (
+        <TimelineModal
+          taskName={tlModal.taskName}
+          time={tlTime}
+          setTime={setTlTime}
+          note={tlNote}
+          setNote={setTlNote}
+          busy={tlBusy}
+          onCancel={() => { setTlModal(null); setTlNote(""); setTlTime(""); }}
+          onConfirm={confirmTimeline}
         />
       )}
     </div>
@@ -1361,6 +1424,64 @@ const NoteModal = ({ title, color, taskName, note, setNote, onCancel, onConfirm 
     </div>
   </div>
 );
+
+// ============ TimelineModal — Mitarbeiter markiert einen Zeitpunkt + Notiz ============
+const TimelineModal = ({ taskName, time, setTime, note, setNote, busy, onCancel, onConfirm }: {
+  taskName: string; time: string; setTime: (v: string) => void; note: string; setNote: (v: string) => void; busy: boolean; onCancel: () => void; onConfirm: () => void;
+}) => {
+  const color = EVENT_COLOR.timeline;
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-6 z-50">
+      <div className="w-full max-w-xl rounded-2xl p-5 space-y-3" style={{ backgroundColor: "rgba(24,24,28,0.97)", border: `2px solid ${color}` }}>
+        <div className="flex items-center gap-2.5">
+          <span className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
+          <div className="text-xl font-black tracking-wide" style={{ color }}>Timeline</div>
+        </div>
+        <div className="text-white/70 text-sm">Aufgabe: <span className="font-bold text-white">{taskName}</span></div>
+
+        <div className="space-y-1.5">
+          <div className="text-white/60 text-xs font-bold tracking-wider uppercase">Uhrzeit (HH:MM · 24 h)</div>
+          <input
+            type="time"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+            step={60}
+            className="w-full rounded-xl px-4 py-3 outline-none font-mono tabular-nums text-2xl font-black"
+            style={{ backgroundColor: "rgba(255,255,255,0.05)", border: `1.5px solid ${color}66`, color: "#fff", caretColor: color, colorScheme: "dark" }}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="text-white/60 text-xs font-bold tracking-wider uppercase">Notiz</div>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Ihre Notiz zu diesem Zeitpunkt..."
+            rows={4}
+            className="w-full rounded-xl p-3.5 resize-none outline-none font-medium"
+            style={{ backgroundColor: "rgba(255,255,255,0.05)", border: `1.5px solid ${color}66`, color: "#fff", caretColor: color }}
+          />
+        </div>
+
+        <div className="rounded-lg p-2.5 text-[11px] leading-relaxed" style={{ backgroundColor: color + "12", border: `1px solid ${color}44`, color: "#fff" }}>
+          <span style={{ color }}>ℹ</span> Timeline-Einträge ändern weder den Status der Aufgabe, noch die Arbeitszeit oder Pause-Zeit. Sie ergänzen nur den Verlauf.
+        </div>
+
+        <div className="flex gap-3 mt-1">
+          <button disabled={busy} onClick={onCancel} className="flex-1 h-13 py-3 border-2 border-white/15 bg-white/5 text-white rounded-xl font-black tracking-wide disabled:opacity-50">ABBRECHEN</button>
+          <button
+            disabled={busy}
+            onClick={onConfirm}
+            className="flex-1 h-13 py-3 rounded-xl font-black tracking-wide text-white disabled:opacity-50"
+            style={{ backgroundColor: color, boxShadow: `0 4px 14px ${color}66` }}
+          >
+            {busy ? "SPEICHERN…" : "SPEICHERN"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const GBtn_unused = ({ onClick, dot, label, dark }: any) => (
   <button onClick={onClick} className="flex items-center gap-2 px-3.5 py-2.5 rounded-full border transition active:scale-95" style={{ backgroundColor: dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)", borderColor: dark ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.12)", color: dark ? "#fff" : "#000" }}>

@@ -32,4 +32,6 @@ export const ICONS = {
   clipboard: "M9 2h6a2 2 0 012 2v2H7V4a2 2 0 012-2zM5 6h14v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6z",
   edit: "M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z",
   clock: "M12 6v6l4 2M12 21a9 9 0 100-18 9 9 0 000 18z",
+  print: "M6 9V3h12v6M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v7H6z",
+  timeline: "M5 3v18M5 6h3M5 12h3M5 18h3M10 6h9M10 12h9M10 18h9",
 } as const;

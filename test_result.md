@@ -145,6 +145,51 @@ frontend:
         agent: "main"
         comment: "Offline mode is now the default. Login admin123 works, task CRUD via local store. Server can be configured later under /admin/server."
 
+  - task: "Timeline entry (Mitarbeiter) – Tablet button + modal"
+    implemented: true
+    working: true
+    file: "/app/web/src/App.tsx, /app/web/src/lib/workflow.ts, /app/server-node/src/server.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Wired up the already-existing addTimelineEntry helper and the /workflows/:id/timeline
+          Node backend endpoint to a real UI button. On every task card in /tablet there is now a
+          full-width purple "TIMELINE" button. Tapping it opens a modal asking for HH:MM time
+          (defaulted to now) and a note, with a clear info banner explaining the entry is purely
+          informational and does NOT change status, Arbeitszeit or Pause-Zeit. Entries are stored
+          with type=timeline, ts (ISO), note, task_name, created_by='Mitarbeiter'. Verified e2e:
+          saved a timeline entry, task status stayed "Bereit", Arbeitszeit stayed 00:00:00,
+          and the entry appears in "Verlauf · Notizen" in both Tablet and Admin views with
+          a light purple (#C084FC) color distinct from Vorbereiten/Starten/Pause/Beenden.
+
+  - task: "Drucken (Print) – Admin per-task report"
+    implemented: true
+    working: true
+    file: "/app/web/src/App.tsx, /app/web/src/lib/printReport.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Added a blue "Drucken" button next to Bearbeiten in AdminHome task cards (new 2x2 grid:
+          Bearbeiten | Drucken | Archivieren | Löschen) and also to every archived task card in
+          AdminArchive. Clicking opens a new browser window/tab with an A4-formatted HTML report
+          (black on white, printable via Ctrl+P or saved as PDF). The report contains all
+          5 required sections: 1) Aufgaben-Daten (Datum, Aufgabentyp, Haus, Station, Mitarbeiter,
+          Beschreibung, Zeit von/bis, Status), 2) Zeit-Informationen with KPI tiles
+          (Gesamt-Arbeitszeit, Pause-Zeit, Pause-Anzahl, Ereignisse gesamt), 3) Verlauf · Notizen
+          with every workflow event (vorbereiten/starten/pause/fortsetzen/beenden) chronologically
+          sorted with color dots, 4) Timeline (Mitarbeiter-Markierungen), 5) Admin-Änderungen
+          (Zeitkorrektur, Beenden rückgängig). Verified e2e: the popup opens with correct title
+          "Aufgabe Reinigung Kueche · Haus A · Station 10", all 5 sections render, timeline entry
+          is present with created_by=Mitarbeiter, undone events are crossed out.
+
   - task: "Remote backend integration (kvd-backend.onrender.com)"
     implemented: true
     working: false
