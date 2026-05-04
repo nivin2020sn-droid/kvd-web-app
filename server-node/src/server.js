@@ -17,9 +17,22 @@ const DEFAULT_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const ADMIN_TOKEN = 'admin-session-token';
 
 // Cloudinary (signed uploads via backend ONLY — API secret never leaves server)
-const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || '';
-const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || '';
-const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || '';
+// IMPORTANT: trim() removes any whitespace / newlines that sneak in when env
+// vars are copy-pasted into Render's UI — a frequent cause of "Invalid cloud_name".
+function cleanEnv(v) {
+  if (!v) return '';
+  // Strip surrounding whitespace, quotes, and any trailing CR/LF
+  return String(v).trim().replace(/^['"]|['"]$/g, '').trim();
+}
+const CLOUDINARY_CLOUD_NAME = cleanEnv(process.env.CLOUDINARY_CLOUD_NAME);
+const CLOUDINARY_API_KEY    = cleanEnv(process.env.CLOUDINARY_API_KEY);
+const CLOUDINARY_API_SECRET = cleanEnv(process.env.CLOUDINARY_API_SECRET);
+// If somebody set CLOUDINARY_URL we DELETE it so the SDK doesn't pick it up
+// implicitly — we want only our explicit config below.
+if (process.env.CLOUDINARY_URL) {
+  console.warn('⚠ CLOUDINARY_URL is set in environment — REMOVING to avoid conflict with explicit config');
+  delete process.env.CLOUDINARY_URL;
+}
 const CLOUDINARY_ENABLED = !!(CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET);
 if (CLOUDINARY_ENABLED) {
   cloudinary.config({
@@ -28,9 +41,19 @@ if (CLOUDINARY_ENABLED) {
     api_secret: CLOUDINARY_API_SECRET,
     secure: true,
   });
-  console.log('✅ Cloudinary configured for cloud:', CLOUDINARY_CLOUD_NAME);
+  // Validate values look reasonable so we surface mistakes immediately.
+  const cloudOk    = /^[a-zA-Z0-9_-]+$/.test(CLOUDINARY_CLOUD_NAME);
+  const keyLooksOk = /^[0-9]{6,}$/.test(CLOUDINARY_API_KEY);
+  console.log('✅ Cloudinary configured for cloud:', JSON.stringify(CLOUDINARY_CLOUD_NAME));
+  console.log('   • cloud_name length :', CLOUDINARY_CLOUD_NAME.length, '— format ok?', cloudOk);
+  console.log('   • api_key length    :', CLOUDINARY_API_KEY.length, '— numeric?', keyLooksOk);
+  console.log('   • api_secret length :', CLOUDINARY_API_SECRET.length, '— present?', !!CLOUDINARY_API_SECRET);
+  if (!cloudOk) console.warn('   ⚠ cloud_name contains unexpected characters – may be wrong!');
+  if (!keyLooksOk) console.warn('   ⚠ api_key does not look like a typical Cloudinary numeric key!');
 } else {
   console.warn('⚠ Cloudinary NOT configured — set CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET');
+  console.warn('   present? cloud=%s key=%s secret=%s',
+    !!CLOUDINARY_CLOUD_NAME, !!CLOUDINARY_API_KEY, !!CLOUDINARY_API_SECRET);
 }
 
 // Multer: keep uploaded files in memory (we stream them to Cloudinary without touching disk)
@@ -304,25 +327,67 @@ router.delete('/tasks/:id', requireAdmin, async (req, res) => {
 });
 
 // =================== PHOTOS / MEDIA ===================
-// Upload one file via multipart/form-data. Signed server-side using API secret;
-// no secret ever leaves the server. Image is stored under folder `tasks/{taskId}`.
-router.post('/tasks/:id/photos', upload.single('file'), async (req, res) => {
-  if (!CLOUDINARY_ENABLED) return res.status(503).json({ detail: 'Cloudinary nicht konfiguriert' });
-  if (!req.file || !req.file.buffer) return res.status(400).json({ detail: 'Keine Datei gesendet (Feld "file" erforderlich)' });
-  const taskId = req.params.id;
-  const task = await TaskModel.findOne({ id: taskId }, { _id: 0, id: 1 }).lean();
-  if (!task) return res.status(404).json({ detail: 'Aufgabe nicht gefunden' });
+// Diagnostic endpoint — confirms what the running process actually sees in env.
+// Safe to expose: secret length only, never the secret itself.
+router.get('/cloudinary-status', (req, res) => {
+  res.json({
+    enabled: CLOUDINARY_ENABLED,
+    cloud_name: CLOUDINARY_CLOUD_NAME || null,
+    cloud_name_length: CLOUDINARY_CLOUD_NAME.length,
+    cloud_name_format_ok: /^[a-zA-Z0-9_-]+$/.test(CLOUDINARY_CLOUD_NAME),
+    api_key_present: !!CLOUDINARY_API_KEY,
+    api_key_length: CLOUDINARY_API_KEY.length,
+    api_key_numeric: /^[0-9]{6,}$/.test(CLOUDINARY_API_KEY),
+    api_secret_present: !!CLOUDINARY_API_SECRET,
+    api_secret_length: CLOUDINARY_API_SECRET.length,
+    cloudinary_url_was_set: !!process.env.__CLOUDINARY_URL_WAS_SET, // we capture it below if it existed
+    sdk_config: {
+      cloud_name: cloudinary.config().cloud_name || null,
+      api_key_set: !!cloudinary.config().api_key,
+      secure: cloudinary.config().secure || false,
+    },
+  });
+});
+
+// Shared upload handler — extracts file from multer, streams to Cloudinary,
+// returns either {ok:true, photo, task} (when bound to a task) or {ok:true, photo}
+// (generic upload). Used by BOTH `/tasks/:id/photos` and `/upload`.
+async function handleCloudinaryUpload(req, res, { taskId } = {}) {
+  // ---- Diagnostic logs (request scope) ----
+  const reqId = Math.random().toString(36).slice(2, 8);
+  console.log(`[upload ${reqId}] ▶ start  path=${req.path}  taskId=${taskId || '-'}`);
+  console.log(`[upload ${reqId}]   env CLOUDINARY_CLOUD_NAME = "${CLOUDINARY_CLOUD_NAME}" (len=${CLOUDINARY_CLOUD_NAME.length})`);
+  console.log(`[upload ${reqId}]   env API_KEY present       = ${!!CLOUDINARY_API_KEY} (len=${CLOUDINARY_API_KEY.length})`);
+  console.log(`[upload ${reqId}]   env API_SECRET present    = ${!!CLOUDINARY_API_SECRET} (len=${CLOUDINARY_API_SECRET.length})`);
+  console.log(`[upload ${reqId}]   sdk.cloud_name (live)     = "${cloudinary.config().cloud_name || ''}"`);
+
+  if (!CLOUDINARY_ENABLED) {
+    console.warn(`[upload ${reqId}] ✗ Cloudinary not configured`);
+    return res.status(503).json({ detail: 'Cloudinary nicht konfiguriert' });
+  }
+  if (!req.file || !req.file.buffer) {
+    console.warn(`[upload ${reqId}] ✗ no file in request (field name must be "file")`);
+    return res.status(400).json({ detail: 'Keine Datei gesendet (Feld "file" erforderlich)' });
+  }
+  console.log(`[upload ${reqId}]   file: ${req.file.originalname} (${req.file.mimetype}) ${req.file.size} bytes`);
+
+  // If bound to a task, validate it exists.
+  if (taskId) {
+    const task = await TaskModel.findOne({ id: taskId }, { _id: 0, id: 1 }).lean();
+    if (!task) {
+      console.warn(`[upload ${reqId}] ✗ task ${taskId} not found`);
+      return res.status(404).json({ detail: 'Aufgabe nicht gefunden' });
+    }
+  }
   const caption = (req.body?.caption || '').toString().slice(0, 500);
   const uploadedBy = (req.body?.uploadedBy || '').toString().slice(0, 120);
 
   try {
-    // Stream buffer → Cloudinary upload
     const result = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
-          folder: `tasks/${taskId}`,
+          folder: taskId ? `tasks/${taskId}` : 'tasks/_unbound',
           resource_type: 'image',
-          // Keep full-quality original; transformations generate thumbnails on-the-fly
           quality: 'auto:best',
           fetch_format: 'auto',
         },
@@ -331,15 +396,9 @@ router.post('/tasks/:id/photos', upload.single('file'), async (req, res) => {
       stream.end(req.file.buffer);
     });
 
-    // Derive a lightweight thumbnail URL via transformations (no extra storage)
     const thumbnailUrl = cloudinary.url(result.public_id, {
-      secure: true,
-      width: 400,
-      height: 400,
-      crop: 'fill',
-      gravity: 'auto',
-      quality: 'auto',
-      fetch_format: 'auto',
+      secure: true, width: 400, height: 400, crop: 'fill', gravity: 'auto',
+      quality: 'auto', fetch_format: 'auto',
     });
     const fullSizeUrl = result.secure_url;
 
@@ -358,17 +417,44 @@ router.post('/tasks/:id/photos', upload.single('file'), async (req, res) => {
       format: result.format,
     };
 
-    const updated = await TaskModel.findOneAndUpdate(
-      { id: taskId },
-      { $push: { photos: photo } },
-      { new: true, projection: { _id: 0 } },
-    ).lean();
-    broadcast({ type: 'tasks_updated' });
+    let updated = null;
+    if (taskId) {
+      updated = await TaskModel.findOneAndUpdate(
+        { id: taskId },
+        { $push: { photos: photo } },
+        { new: true, projection: { _id: 0 } },
+      ).lean();
+      broadcast({ type: 'tasks_updated' });
+    }
+    console.log(`[upload ${reqId}] ✓ ok — public_id=${result.public_id} url=${fullSizeUrl}`);
     res.json({ ok: true, photo, task: updated });
   } catch (err) {
-    console.error('Photo upload failed:', err);
-    res.status(500).json({ detail: 'Upload fehlgeschlagen: ' + (err?.message || 'unbekannt') });
+    // Print the FULL Cloudinary error object so the cause is obvious in logs.
+    console.error(`[upload ${reqId}] ✗ Cloudinary error:`, {
+      message: err?.message,
+      name: err?.name,
+      http_code: err?.http_code,
+      error: err?.error,
+      stack: err?.stack?.split('\n').slice(0, 3).join('\n'),
+    });
+    res.status(500).json({
+      detail: 'Upload fehlgeschlagen: ' + (err?.message || 'unbekannt'),
+      http_code: err?.http_code,
+      cloud_name_used: cloudinary.config().cloud_name || null,
+    });
   }
+}
+
+// Upload bound to a specific task (preferred — places photo metadata on the task)
+router.post('/tasks/:id/photos', upload.single('file'), (req, res) =>
+  handleCloudinaryUpload(req, res, { taskId: req.params.id })
+);
+
+// Generic upload alias — same handler, accepts optional ?taskId= or body.taskId.
+// Frontend should send `file` field (and optional taskId/caption/uploadedBy).
+router.post('/upload', upload.single('file'), (req, res) => {
+  const taskId = (req.query.taskId || req.body?.taskId || '').toString().trim() || undefined;
+  return handleCloudinaryUpload(req, res, { taskId });
 });
 
 // List photos for a task (light endpoint — just returns the photos sub-array).
