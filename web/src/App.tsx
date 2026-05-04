@@ -24,7 +24,10 @@ import {
   allowedActions,
 } from "./lib/workflow";
 import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent } from "./lib/workflow";
+import { adminCorrectTimes, adminUndoFinish } from "./lib/workflow";
 import { useAdminName, setAdminName } from "./lib/adminName";
+import { useAdminTheme, setAdminTheme, resolveBg, isDark as isDarkHex } from "./lib/adminTheme";
+import type { ThemeMode } from "./lib/adminTheme";
 
 // ============ App root ============
 export default function App() {
@@ -167,12 +170,18 @@ function AdminLogin() {
 function AdminHome() {
   const nav = useNavigate();
   const adminName = useAdminName();
+  const theme = useAdminTheme();
+  const bgColor = resolveBg(theme);
+  const darkScope = isDarkHex(bgColor);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [persons, setPersons] = useState<SimpleItem[]>([]);
   const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
   const [online, setOnline] = useState(!!getServerConfigSync());
+  const [timeEditTask, setTimeEditTask] = useState<Task | null>(null);
+  const [undoTask, setUndoTask] = useState<Task | null>(null);
+  const [busyId, setBusyId] = useState<string>("");
 
   useEffect(() => { const u = subscribeServerConfig((c) => setOnline(!!c)); return () => { u(); }; }, []);
   const load = async () => {
@@ -222,10 +231,11 @@ function AdminHome() {
   void tick;
 
   return (
+    <div className={`admin-scope ${darkScope ? "dark" : "light"}`} style={{ ["--admin-bg" as any]: bgColor }}>
     <div className="min-h-full flex flex-col">
       <div className="flex items-center justify-between p-5">
-        <div className="min-w-0 flex-1 mr-3"><div className="text-2xl font-black tracking-widest uppercase truncate">{adminName}</div><div className="text-white/50 text-xs tracking-wider">Aufgaben heute · {tasks.length}</div></div>
-        <button onClick={logout} className="p-2"><Icon d={ICONS.logout} size={22} /></button>
+        <div className="min-w-0 flex-1 mr-3"><div className="text-2xl font-black tracking-widest uppercase truncate">{adminName}</div><div className="text-xs tracking-wider opacity-60">Aufgaben heute · {tasks.length}</div></div>
+        <button onClick={logout} className="p-2"><Icon d={ICONS.logout} size={22} color={darkScope ? "#fff" : "#000"} /></button>
       </div>
       <div className={`mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-full border bg-surface-card ${online ? "border-brand-green" : "border-brand-orange"}`}>
         <span className={`w-2 h-2 rounded-full ${online ? "bg-brand-green" : "bg-brand-orange"}`} />
@@ -311,6 +321,25 @@ function AdminHome() {
                   <Icon d={ICONS.trash} size={14} color="#FF3B30" /> Löschen
                 </button>
               </div>
+
+              {/* Admin-Zeit-Aktionen */}
+              <div className={`grid ${wfStatus === "finished" ? "grid-cols-2" : "grid-cols-1"} gap-2`}>
+                <button
+                  disabled={(wf.events || []).filter(e => e.type === 'vorbereiten' || e.type === 'starten' || e.type === 'pause' || e.type === 'fortsetzen' || e.type === 'beenden').length === 0}
+                  onClick={() => setTimeEditTask(t)}
+                  className="h-10 rounded-lg border border-white/20 bg-white/5 text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5 disabled:opacity-40"
+                >
+                  <Icon d={ICONS.clock} size={14} color={darkScope ? "#fff" : "#000"} /> Zeiten bearbeiten
+                </button>
+                {wfStatus === "finished" && (
+                  <button
+                    onClick={() => setUndoTask(t)}
+                    className="h-10 rounded-lg border border-brand-yellow/60 bg-brand-yellow/10 text-brand-yellow text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5"
+                  >
+                    <Icon d={ICONS.back} size={14} color="#FFD600" /> Beenden rückgängig
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -320,6 +349,38 @@ function AdminHome() {
           <Icon d={ICONS.archive} size={18} color="#000" /> HEUTE JETZT ARCHIVIEREN
         </button>
       )}
+    </div>
+    {timeEditTask && (
+      <TimeEditModal
+        task={timeEditTask}
+        workflow={workflows[timeEditTask.id] || getWorkflow(timeEditTask.id)}
+        busy={busyId === timeEditTask.id}
+        onClose={() => setTimeEditTask(null)}
+        onSave={async (updates, note) => {
+          setBusyId(timeEditTask.id);
+          try {
+            const wf = await adminCorrectTimes(timeEditTask.id, updates, note, timeEditTask.task_type);
+            setWorkflows((prev) => ({ ...prev, [timeEditTask.id]: wf }));
+            setTimeEditTask(null);
+          } catch (e: any) { alert("Fehler: " + (e?.message || "")); } finally { setBusyId(""); }
+        }}
+      />
+    )}
+    {undoTask && (
+      <UndoFinishModal
+        task={undoTask}
+        busy={busyId === undoTask.id}
+        onClose={() => setUndoTask(null)}
+        onConfirm={async (note) => {
+          setBusyId(undoTask.id);
+          try {
+            const wf = await adminUndoFinish(undoTask.id, note, undoTask.task_type);
+            setWorkflows((prev) => ({ ...prev, [undoTask.id]: wf }));
+            setUndoTask(null);
+          } catch (e: any) { alert("Fehler: " + (e?.message || "")); } finally { setBusyId(""); }
+        }}
+      />
+    )}
     </div>
   );
 }
@@ -331,7 +392,133 @@ const AdminCell = ({ label, value, color }: { label: string; value: string; colo
   </div>
 );
 
-// ============ Event History (Verlauf) ============
+// ============ TimeEditModal — Admin kann einzelne Event-Zeitpunkte anpassen ============
+function TimeEditModal({ task, workflow, busy, onClose, onSave }: {
+  task: Task;
+  workflow: TaskWorkflow;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (updates: Array<{ index: number; ts: string }>, note: string) => Promise<void>;
+}) {
+  const editable = (workflow.events || [])
+    .map((e, i) => ({ e, i }))
+    .filter(({ e }) => ["vorbereiten", "starten", "pause", "fortsetzen", "beenden"].includes(e.type) && !e.undone);
+  const [times, setTimes] = useState<Record<number, string>>(() => {
+    const init: Record<number, string> = {};
+    for (const { e, i } of editable) {
+      const d = new Date(e.ts);
+      init[i] = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    }
+    return init;
+  });
+  const [note, setNote] = useState("");
+
+  const handleSave = async () => {
+    const updates: Array<{ index: number; ts: string }> = [];
+    for (const { e, i } of editable) {
+      const newHHMM = times[i];
+      if (!newHHMM) continue;
+      const [h, m] = newHHMM.split(":").map((x) => parseInt(x, 10));
+      if (isNaN(h) || isNaN(m)) continue;
+      const d = new Date(e.ts);
+      d.setHours(h, m, 0, 0);
+      const newIso = d.toISOString();
+      if (newIso !== e.ts) updates.push({ index: i, ts: newIso });
+    }
+    if (updates.length === 0) { onClose(); return; }
+    await onSave(updates, note);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/85 flex items-start justify-center p-4 z-50 overflow-y-auto">
+      <div className="w-full max-w-xl my-6 rounded-2xl p-5 space-y-4" style={{ backgroundColor: "rgba(24,24,28,0.98)", border: "2px solid #FFD600" }}>
+        <div className="flex items-center gap-2.5">
+          <Icon d={ICONS.clock} size={22} color="#FFD600" />
+          <div className="text-xl font-black tracking-wide text-brand-yellow">Zeiten bearbeiten</div>
+        </div>
+        <div className="text-white/70 text-sm">Aufgabe: <span className="font-bold text-white">{task.task_type} · Haus {task.haus} · Station {task.station}</span></div>
+        <div className="text-white/60 text-xs">Nur die Uhrzeit (24h) jedes Ereignisses kann geändert werden. Datum bleibt erhalten.</div>
+
+        <div className="space-y-2">
+          {editable.length === 0 && <div className="text-white/50 text-sm italic">Keine Ereignisse zum Bearbeiten</div>}
+          {editable.map(({ e, i }) => {
+            const c = EVENT_COLOR[e.type];
+            return (
+              <div key={i} className="flex items-center gap-3 rounded-lg p-2.5" style={{ backgroundColor: c + "10", borderLeft: `3px solid ${c}` }}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-black tracking-wide" style={{ color: c }}>{EVENT_LABEL[e.type]}</div>
+                  <div className="text-[10px] font-mono opacity-60 text-white">alt: {formatDateTime(e.ts)}</div>
+                </div>
+                <input
+                  type="time"
+                  step={60}
+                  value={times[i] || ""}
+                  onChange={(ev) => setTimes((prev) => ({ ...prev, [i]: ev.target.value }))}
+                  className="h-11 px-3 rounded-lg bg-black/40 border-2 text-white font-mono tabular-nums text-base outline-none"
+                  style={{ borderColor: c + "99", caretColor: c }}
+                />
+              </div>
+            );
+          })}
+        </div>
+
+        <div>
+          <div className="section-label mb-1.5">Notiz des Admins (optional)</div>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="z. B. Starten wurde zu spät gedrückt, echter Beginn war 07:00"
+            rows={2}
+            className="w-full rounded-xl p-3 bg-black/40 border-2 border-brand-yellow/40 text-brand-yellow caret-brand-yellow outline-none resize-none"
+          />
+        </div>
+
+        <div className="flex gap-3">
+          <button onClick={onClose} disabled={busy} className="flex-1 h-12 border-2 border-white/15 bg-white/5 rounded-xl font-black tracking-wide text-white disabled:opacity-50">ABBRECHEN</button>
+          <button onClick={handleSave} disabled={busy} className="flex-1 h-12 rounded-xl font-black tracking-wide text-black bg-brand-yellow disabled:opacity-50">{busy ? "..." : "SPEICHERN"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ UndoFinishModal ============
+function UndoFinishModal({ task, busy, onClose, onConfirm }: {
+  task: Task;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: (note: string) => Promise<void>;
+}) {
+  const [note, setNote] = useState("");
+  return (
+    <div className="fixed inset-0 bg-black/85 flex items-center justify-center p-4 z-50">
+      <div className="w-full max-w-md rounded-2xl p-5 space-y-4" style={{ backgroundColor: "rgba(24,24,28,0.98)", border: "2px solid #FFD600" }}>
+        <div className="flex items-center gap-2.5">
+          <Icon d={ICONS.back} size={22} color="#FFD600" />
+          <div className="text-xl font-black tracking-wide text-brand-yellow">Beenden rückgängig machen</div>
+        </div>
+        <div className="text-white/70 text-sm">
+          Aufgabe: <span className="font-bold text-white">{task.task_type}</span><br />
+          Die Aufgabe kehrt zum Zustand vor dem letzten <span className="text-brand-green font-bold">Beenden</span> zurück. Alle Notizen und der Verlauf bleiben erhalten.
+        </div>
+        <div>
+          <div className="section-label mb-1.5">Notiz des Admins (optional)</div>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="z. B. Versehentlich beendet"
+            rows={3}
+            className="w-full rounded-xl p-3 bg-black/40 border-2 border-brand-yellow/40 text-brand-yellow caret-brand-yellow outline-none resize-none"
+          />
+        </div>
+        <div className="flex gap-3">
+          <button onClick={onClose} disabled={busy} className="flex-1 h-12 border-2 border-white/15 bg-white/5 rounded-xl font-black tracking-wide text-white disabled:opacity-50">ABBRECHEN</button>
+          <button onClick={() => onConfirm(note)} disabled={busy} className="flex-1 h-12 rounded-xl font-black tracking-wide text-black bg-brand-yellow disabled:opacity-50">{busy ? "..." : "RÜCKGÄNGIG"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function EventHistoryList({ events, dark = true, max = 50 }: { events: WorkflowEvent[]; dark?: boolean; max?: number }) {
   if (!events || events.length === 0) return null;
   // Sort chronologically (oldest first)
@@ -344,21 +531,33 @@ function EventHistoryList({ events, dark = true, max = 50 }: { events: WorkflowE
       </div>
       <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
         {sorted.map((ev, i) => {
-          const c = EVENT_COLOR[ev.type];
+          const c = EVENT_COLOR[ev.type] || "#888";
+          const isAdminEvent = ev.type === "admin_zeitkorrektur" || ev.type === "admin_beenden_rueckgaengig";
+          const undone = !!ev.undone;
           return (
-            <div key={i} className="flex gap-2.5 items-start rounded-lg p-2" style={{ backgroundColor: c + "10", borderLeft: `3px solid ${c}` }}>
+            <div key={i} className="flex gap-2.5 items-start rounded-lg p-2" style={{ backgroundColor: c + "10", borderLeft: `3px solid ${c}`, opacity: undone ? 0.55 : 1 }}>
               <div className="flex-shrink-0 mt-0.5">
                 <div className="w-2 h-2 rounded-full" style={{ backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-baseline gap-2 flex-wrap">
-                  <span className="text-xs font-black tracking-wide" style={{ color: c }}>{EVENT_LABEL[ev.type]}</span>
+                  <span className="text-xs font-black tracking-wide" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>{EVENT_LABEL[ev.type] || ev.type}</span>
+                  {undone && <span className="text-[10px] font-bold text-brand-yellow">(zurückgenommen)</span>}
                   <span className="text-[10px] font-mono opacity-70" style={{ color: dark ? "#fff" : "#000" }}>{formatDateTime(ev.ts)}</span>
                 </div>
                 {ev.note ? (
-                  <div className="text-xs italic mt-0.5" style={{ color: c }}>„{ev.note}"</div>
+                  <div className="text-xs italic mt-0.5" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>„{ev.note}"</div>
                 ) : (
                   <div className="text-[10px] italic opacity-40" style={{ color: dark ? "#fff" : "#000" }}>(keine Notiz)</div>
+                )}
+                {isAdminEvent && ev.corrections && ev.corrections.length > 0 && (
+                  <div className="mt-1 space-y-0.5">
+                    {ev.corrections.map((co, k) => (
+                      <div key={k} className="text-[10px] font-mono opacity-80" style={{ color: c }}>
+                        ↳ {EVENT_LABEL[co.target_type]}: {new Date(co.old_ts).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} → {new Date(co.new_ts).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
@@ -679,6 +878,52 @@ function AdminArchive() {
 }
 
 // ============ Admin Settings ============
+// ============ Admin Theme Section (used in Settings) ============
+function AdminThemeSection() {
+  const theme = useAdminTheme();
+  return (
+    <div>
+      <div className="section-label mb-2">Admin Theme</div>
+      <div className="text-white/50 text-xs mb-3">Hintergrund-Modus der Admin-Ansicht</div>
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        {(["dark", "light", "custom"] as ThemeMode[]).map((m) => (
+          <button
+            key={m}
+            onClick={() => setAdminTheme({ mode: m, color: theme.color })}
+            className={`h-12 rounded-lg border-2 text-xs font-black tracking-wide ${
+              theme.mode === m ? "border-brand-yellow bg-brand-yellow/10 text-brand-yellow" : "border-white/15 bg-white/5 text-white/70"
+            }`}
+          >
+            {m === "dark" ? "Dark Mode" : m === "light" ? "Light Mode" : "Custom"}
+          </button>
+        ))}
+      </div>
+      {theme.mode === "custom" && (
+        <div className="flex items-center gap-2">
+          <input
+            type="color"
+            value={theme.color}
+            onChange={(e) => setAdminTheme({ mode: "custom", color: e.target.value })}
+            className="h-12 w-16 rounded-lg border-2 border-white/15 bg-transparent cursor-pointer"
+          />
+          <input
+            type="text"
+            value={theme.color}
+            onChange={(e) => setAdminTheme({ mode: "custom", color: e.target.value })}
+            placeholder="#1E1E24"
+            maxLength={7}
+            className="flex-1 h-12 px-3 bg-black/40 border-2 border-white/15 rounded-lg text-white font-mono caret-brand-yellow outline-none"
+          />
+        </div>
+      )}
+      <div className="mt-2 text-white/50 text-xs">
+        Vorschau: <span className="inline-block w-4 h-4 rounded align-middle ml-1" style={{ backgroundColor: resolveBg(theme) }} />
+        <span className="ml-2 font-mono">{resolveBg(theme)}</span>
+      </div>
+    </div>
+  );
+}
+
 function AdminSettings() {
   const nav = useNavigate();
   const currentName = useAdminName();
@@ -753,6 +998,10 @@ function AdminSettings() {
             {nameSaved && <span className="text-brand-green text-xs font-bold flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-brand-green" /> Gespeichert</span>}
           </div>
         </div>
+
+        {/* Admin Theme */}
+        <AdminThemeSection />
+
         <div>
           <div className="section-label mb-3">Logo</div>
           <div className="h-32 bg-surface-card border border-surface-border flex items-center justify-center mb-3 rounded-xl overflow-hidden">

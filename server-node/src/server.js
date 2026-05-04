@@ -273,6 +273,68 @@ router.get('/update-info', (req, res) => {
 
 // ===== Workflow (Tablet → Admin live sync) =====
 const VALID_EVENTS = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden']);
+const USER_EVENT_TYPES = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden']);
+
+// Rebuilds a workflow's state (status, segments, timestamps) from its events array.
+// Admin events (admin_zeitkorrektur, admin_beenden_rueckgaengig) and `undone` events are ignored
+// for state but kept in the history.
+function recomputeWorkflow(wf) {
+  const events = Array.isArray(wf.events) ? wf.events : [];
+  const active = events.filter((e) => !e.undone && USER_EVENT_TYPES.has(e.type));
+  active.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+  let status = 'idle';
+  const segments = [];
+  let prepared_at = null, started_at = null, paused_at = null, finished_at = null;
+  for (const ev of active) {
+    switch (ev.type) {
+      case 'vorbereiten':
+        status = 'prepared';
+        prepared_at = ev.ts;
+        break;
+      case 'starten': {
+        status = 'running';
+        started_at = started_at || ev.ts;
+        paused_at = null;
+        segments.push({ start: ev.ts, end: null });
+        break;
+      }
+      case 'pause': {
+        status = 'paused';
+        const last = segments[segments.length - 1];
+        if (last && !last.end) last.end = ev.ts;
+        paused_at = ev.ts;
+        break;
+      }
+      case 'fortsetzen': {
+        status = 'running';
+        segments.push({ start: ev.ts, end: null });
+        paused_at = null;
+        break;
+      }
+      case 'beenden': {
+        status = 'finished';
+        finished_at = ev.ts;
+        const last = segments[segments.length - 1];
+        if (last && !last.end) last.end = ev.ts;
+        break;
+      }
+    }
+  }
+  // last note = last non-admin, non-undone event
+  const userEvents = events.filter((e) => !e.undone && USER_EVENT_TYPES.has(e.type));
+  const lastUser = userEvents[userEvents.length - 1];
+  return {
+    ...wf,
+    status,
+    segments,
+    prepared_at,
+    started_at,
+    paused_at: status === 'paused' ? paused_at : null,
+    finished_at,
+    last_note: lastUser ? (lastUser.note || '') : (wf.last_note || ''),
+    last_event_type: lastUser ? lastUser.type : (wf.last_event_type || null),
+  };
+}
 
 function applyWorkflowEvent(wf, type, note, taskName) {
   const before = wf.status || 'idle';
@@ -368,6 +430,74 @@ router.delete('/workflows/:task_id', requireAdmin, async (req, res) => {
   await WorkflowModel.deleteOne({ task_id: req.params.task_id });
   broadcast({ type: 'workflow_updated', workflow: { task_id: req.params.task_id, deleted: true } });
   res.json({ ok: true });
+});
+
+// Admin: Zeit-Korrektur (mehrere Event-Zeitpunkte auf einmal editieren)
+router.post('/workflows/:task_id/admin-correct-times', requireAdmin, async (req, res) => {
+  const { updates, admin_note, task_name } = req.body || {};
+  if (!Array.isArray(updates) || updates.length === 0) return res.status(400).json({ detail: 'updates required' });
+  const existing = await WorkflowModel.findOne({ task_id: req.params.task_id }, { _id: 0 }).lean();
+  if (!existing) return res.status(404).json({ detail: 'Workflow not found' });
+  const wf = JSON.parse(JSON.stringify(existing));
+  wf.events = wf.events || [];
+  const corrections = [];
+  for (const u of updates) {
+    const idx = Number(u.index);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= wf.events.length) continue;
+    if (!u.ts) continue;
+    const ev = wf.events[idx];
+    if (!USER_EVENT_TYPES.has(ev.type)) continue; // nur Arbeits-Events korrigierbar
+    const old_ts = ev.ts;
+    ev.ts = new Date(u.ts).toISOString();
+    corrections.push({ target_type: ev.type, index: idx, old_ts, new_ts: ev.ts });
+  }
+  // Admin-Audit-Event anhängen
+  wf.events.push({
+    type: 'admin_zeitkorrektur',
+    ts: new Date().toISOString(),
+    note: admin_note || '',
+    status_before: wf.status,
+    status_after: wf.status, // wird gleich neu berechnet
+    task_name: task_name || '',
+    corrections,
+  });
+  const recomputed = recomputeWorkflow(wf);
+  recomputed.events[recomputed.events.length - 1].status_after = recomputed.status;
+  await WorkflowModel.findOneAndUpdate({ task_id: req.params.task_id }, { $set: recomputed }, { upsert: true });
+  broadcast({ type: 'workflow_updated', workflow: recomputed });
+  res.json(recomputed);
+});
+
+// Admin: Beenden rückgängig machen
+router.post('/workflows/:task_id/admin-undo-finish', requireAdmin, async (req, res) => {
+  const { admin_note, task_name } = req.body || {};
+  const existing = await WorkflowModel.findOne({ task_id: req.params.task_id }, { _id: 0 }).lean();
+  if (!existing) return res.status(404).json({ detail: 'Workflow not found' });
+  if (existing.status !== 'finished') return res.status(400).json({ detail: 'Nur beendete Aufgaben können rückgängig gemacht werden' });
+  const wf = JSON.parse(JSON.stringify(existing));
+  wf.events = wf.events || [];
+  // find LAST non-undone beenden event and mark undone
+  for (let i = wf.events.length - 1; i >= 0; i--) {
+    if (wf.events[i].type === 'beenden' && !wf.events[i].undone) {
+      wf.events[i].undone = true;
+      wf.events[i].undone_at = new Date().toISOString();
+      break;
+    }
+  }
+  const statusBefore = wf.status;
+  const recomputed = recomputeWorkflow(wf);
+  // Admin-Audit-Event anhängen
+  recomputed.events.push({
+    type: 'admin_beenden_rueckgaengig',
+    ts: new Date().toISOString(),
+    note: admin_note || '',
+    status_before: statusBefore,
+    status_after: recomputed.status,
+    task_name: task_name || '',
+  });
+  await WorkflowModel.findOneAndUpdate({ task_id: req.params.task_id }, { $set: recomputed }, { upsert: true });
+  broadcast({ type: 'workflow_updated', workflow: recomputed });
+  res.json(recomputed);
 });
 
 // Mount router under /api

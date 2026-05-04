@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -14,7 +16,8 @@
     overscroll-behavior: none;
   }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
   button { font-family: inherit; }
   input, textarea, select {
@@ -22,6 +25,39 @@
     font-size: 16px;
   }
 }
+
+/* Admin themed container */
+.admin-scope {
+  font-family: 'Inter', sans-serif;
+  background: var(--admin-bg, #0F0F0F);
+  color: var(--admin-fg, #FFFFFF);
+  min-height: 100%;
+  transition: background-color 0.2s;
+}
+.admin-scope h1, .admin-scope h2, .admin-scope h3 { font-weight: 700; }
+.admin-scope .text-xl { font-size: 1.5rem; line-height: 2rem; }      /* +20% headings */
+.admin-scope .text-lg { font-size: 1.275rem; line-height: 1.75rem; }
+.admin-scope .text-base { font-size: 1.075rem; line-height: 1.625rem; } /* +15% text */
+.admin-scope .text-sm { font-size: 1.0rem; line-height: 1.45rem; }
+.admin-scope .text-xs { font-size: 0.86rem; line-height: 1.15rem; }
+.admin-scope .text-2xl { font-size: 1.875rem; line-height: 2.25rem; }
+.admin-scope .text-3xl { font-size: 2.25rem; line-height: 2.5rem; }
+.admin-scope .font-mono.tabular-nums { font-weight: 700; letter-spacing: 0.5px; }
+.admin-scope button { font-weight: 600; }
+/* Light variant: text colors & borders */
+.admin-scope.light { --admin-fg: #0A0A0A; }
+.admin-scope.light .bg-surface-card { background-color: rgba(0,0,0,0.04) !important; }
+.admin-scope.light .border-surface-border { border-color: rgba(0,0,0,0.12) !important; }
+.admin-scope.light .text-white { color: #0A0A0A !important; }
+.admin-scope.light .text-white\/50 { color: rgba(10,10,10,0.55) !important; }
+.admin-scope.light .text-white\/40 { color: rgba(10,10,10,0.40) !important; }
+.admin-scope.light .text-white\/60 { color: rgba(10,10,10,0.60) !important; }
+.admin-scope.light .text-white\/70 { color: rgba(10,10,10,0.70) !important; }
+.admin-scope.light .bg-white\/5 { background-color: rgba(0,0,0,0.04) !important; }
+.admin-scope.light .bg-white\/10 { background-color: rgba(0,0,0,0.06) !important; }
+.admin-scope.light .border-white\/10 { border-color: rgba(0,0,0,0.10) !important; }
+.admin-scope.light .border-white\/15 { border-color: rgba(0,0,0,0.15) !important; }
+.admin-scope.light .border-white\/20 { border-color: rgba(0,0,0,0.18) !important; }
 
 @layer components {
   .glass-card {
