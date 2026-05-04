@@ -349,6 +349,107 @@ router.get('/cloudinary-status', (req, res) => {
   });
 });
 
+// =================== Cloudinary self-test endpoints ===================
+// These let you verify, WITHOUT involving the frontend at all, whether the
+// configured credentials can talk to Cloudinary. Useful to isolate "bad keys"
+// from "bad upload code".
+
+// 1) Simple presence check — same shape the user requested.
+router.get('/cloudinary-test', (req, res) => {
+  res.json({
+    cloudName: CLOUDINARY_CLOUD_NAME || null,
+    cloudNameLength: CLOUDINARY_CLOUD_NAME.length,
+    hasApiKey: !!CLOUDINARY_API_KEY,
+    hasApiSecret: !!CLOUDINARY_API_SECRET,
+    enabled: CLOUDINARY_ENABLED,
+    // What the SDK is actually using right now (to detect drift between
+    // the env-derived constants and the live SDK state):
+    sdkCloudName: cloudinary.config().cloud_name || null,
+    sdkApiKeySet: !!cloudinary.config().api_key,
+  });
+});
+
+// 2) Live upload — tries to upload a tiny 1x1 PNG generated in memory.
+//    If THIS fails with "Invalid cloud_name dvv6syprg" → 100% credentials issue.
+//    If THIS succeeds but /api/upload fails → bug in upload route.
+//    Returns the full Cloudinary error in the JSON response and prints it to logs.
+router.post('/cloudinary-test-upload', async (req, res) => {
+  if (!CLOUDINARY_ENABLED) {
+    return res.status(503).json({ ok: false, detail: 'Cloudinary nicht konfiguriert' });
+  }
+  // 1×1 transparent PNG — small valid image we generate in-memory.
+  const tinyPngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const buffer = Buffer.from(tinyPngBase64, 'base64');
+
+  console.log('[cloudinary-test-upload] ▶ start');
+  console.log('[cloudinary-test-upload]   env cloud_name = "' + CLOUDINARY_CLOUD_NAME + '" (len=' + CLOUDINARY_CLOUD_NAME.length + ')');
+  console.log('[cloudinary-test-upload]   sdk cloud_name = "' + (cloudinary.config().cloud_name || '') + '"');
+  console.log('[cloudinary-test-upload]   api_key len    = ' + CLOUDINARY_API_KEY.length);
+  console.log('[cloudinary-test-upload]   api_secret len = ' + CLOUDINARY_API_SECRET.length);
+  console.log('[cloudinary-test-upload]   buffer size    = ' + buffer.length + ' bytes');
+
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'tasks/_diagnostic',
+          resource_type: 'image',
+          public_id: 'selftest_' + Date.now(),
+          overwrite: true,
+        },
+        (err, r) => err ? reject(err) : resolve(r),
+      );
+      stream.end(buffer);
+    });
+
+    console.log('[cloudinary-test-upload] ✓ success — public_id=' + result.public_id);
+    return res.json({
+      ok: true,
+      message: 'Cloudinary credentials work ✔',
+      cloud_name: CLOUDINARY_CLOUD_NAME,
+      public_id: result.public_id,
+      url: result.secure_url,
+      bytes: result.bytes,
+      width: result.width,
+      height: result.height,
+    });
+  } catch (err) {
+    // Print EVERYTHING about the error so the cause is unambiguous.
+    const errorDump = {
+      message: err?.message,
+      name: err?.name,
+      http_code: err?.http_code,
+      error: err?.error,                 // nested cloudinary error object
+      error_message: err?.error?.message,
+      error_http_code: err?.error?.http_code,
+      stack: err?.stack,
+    };
+    console.error('[cloudinary-test-upload] ✗ FAILED — full error:');
+    console.error(JSON.stringify(errorDump, null, 2));
+
+    return res.status(500).json({
+      ok: false,
+      detail: err?.message || 'Unknown error',
+      cloudinary_error: {
+        message: err?.message,
+        http_code: err?.http_code,
+        nested: err?.error || null,
+      },
+      cloud_name_used: cloudinary.config().cloud_name || null,
+      // Hint for common issues
+      hint:
+        /Invalid cloud_name/i.test(err?.message || '')
+          ? 'Cloud name is rejected by Cloudinary. Open https://console.cloudinary.com/, copy "Cloud name" (NOT API key) and update CLOUDINARY_CLOUD_NAME in Render. Tip: type it manually instead of pasting to avoid hidden whitespace.'
+          : /Invalid API key/i.test(err?.message || '')
+          ? 'API key is wrong. Open Cloudinary Dashboard → Account Details → API Key.'
+          : /Invalid Signature|signature/i.test(err?.message || '')
+          ? 'API secret is wrong. Open Cloudinary Dashboard → Account Details → API Secret.'
+          : 'Check Render env vars are exactly as on https://console.cloudinary.com/ Account Details.',
+    });
+  }
+});
+
 // Shared upload handler — extracts file from multer, streams to Cloudinary,
 // returns either {ok:true, photo, task} (when bound to a task) or {ok:true, photo}
 // (generic upload). Used by BOTH `/tasks/:id/photos` and `/upload`.
