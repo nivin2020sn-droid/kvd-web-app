@@ -500,6 +500,40 @@ router.post('/workflows/:task_id/admin-undo-finish', requireAdmin, async (req, r
   res.json(recomputed);
 });
 
+// Mitarbeiter: Timeline-Eintrag hinzufügen (informativ, ändert weder Status noch Zeitberechnung)
+router.post('/workflows/:task_id/timeline', async (req, res) => {
+  const { time, date, note, task_name, created_by } = req.body || {};
+  const m = typeof time === 'string' && time.match(/^(\d{2}):(\d{2})$/);
+  if (!m) return res.status(400).json({ detail: 'time muss HH:MM sein' });
+  const h = parseInt(m[1], 10); const min = parseInt(m[2], 10);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return res.status(400).json({ detail: 'Ungültige Uhrzeit' });
+  const baseDate = date ? new Date(date + 'T00:00:00') : new Date();
+  baseDate.setHours(h, min, 0, 0);
+  const ts = baseDate.toISOString();
+
+  const existing = await WorkflowModel.findOne({ task_id: req.params.task_id }, { _id: 0 }).lean();
+  const base = existing || {
+    task_id: req.params.task_id, status: 'idle', events: [], segments: [],
+    prepared_at: null, started_at: null, paused_at: null, finished_at: null,
+    last_note: '', last_event_type: null,
+  };
+  const wf = JSON.parse(JSON.stringify(base));
+  wf.events = wf.events || [];
+  wf.events.push({
+    type: 'timeline',
+    ts,
+    note: note || '',
+    status_before: wf.status,
+    status_after: wf.status, // unverändert
+    task_name: task_name || '',
+    created_by: created_by || 'Mitarbeiter',
+  });
+  // WICHTIG: Status, Segmente und Zeiten bleiben unverändert
+  await WorkflowModel.findOneAndUpdate({ task_id: req.params.task_id }, { $set: wf }, { upsert: true });
+  broadcast({ type: 'workflow_updated', workflow: wf });
+  res.json(wf);
+});
+
 // Mount router under /api
 app.use('/api', router);
 

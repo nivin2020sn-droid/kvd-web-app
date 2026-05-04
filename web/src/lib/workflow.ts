@@ -13,7 +13,8 @@ export type EventType =
   | "fortsetzen"
   | "beenden"
   | "admin_zeitkorrektur"
-  | "admin_beenden_rueckgaengig";
+  | "admin_beenden_rueckgaengig"
+  | "timeline";
 
 const USER_EVENT_TYPES: Set<EventType> = new Set([
   "vorbereiten",
@@ -33,6 +34,7 @@ export interface WorkflowEvent {
   undone?: boolean;
   undone_at?: string;
   corrections?: Array<{ target_type: EventType; index: number; old_ts: string; new_ts: string }>;
+  created_by?: string;
 }
 
 export interface TaskWorkflow {
@@ -287,6 +289,44 @@ export async function adminUndoFinish(
   return recomputed;
 }
 
+/** Add a Timeline entry (employee-only, neutral informational).
+ *  Does NOT change state/segments/Arbeitszeit. */
+export async function addTimelineEntry(
+  task_id: string,
+  time: string,        // "HH:MM"
+  note: string,
+  task_name: string,
+  created_by = "Mitarbeiter",
+): Promise<TaskWorkflow> {
+  if (loadServerConfig()) {
+    const res = await api<TaskWorkflow>(`/workflows/${task_id}/timeline`, {
+      method: "POST",
+      body: { time, note, task_name, created_by },
+    });
+    saveWorkflow(res);
+    return res;
+  }
+  // Offline: append locally
+  const wf = { ...getWorkflow(task_id) };
+  wf.events = [...(wf.events || [])];
+  const m = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!m) throw new Error("time muss HH:MM sein");
+  const [h, mi] = [parseInt(m[1], 10), parseInt(m[2], 10)];
+  const d = new Date();
+  d.setHours(h, mi, 0, 0);
+  wf.events.push({
+    type: "timeline",
+    ts: d.toISOString(),
+    note,
+    status_before: wf.status,
+    status_after: wf.status,
+    task_name,
+    created_by,
+  });
+  saveWorkflow(wf);
+  return wf;
+}
+
 /** Offline mirror of the server recomputeWorkflow. */
 function recomputeLocal(wf: TaskWorkflow): TaskWorkflow {
   const events = wf.events || [];
@@ -403,6 +443,7 @@ export const EVENT_LABEL: Record<EventType, string> = {
   beenden: "Beenden",
   admin_zeitkorrektur: "Admin · Zeitkorrektur",
   admin_beenden_rueckgaengig: "Admin · Beenden rückgängig",
+  timeline: "Timeline",
 };
 
 export const EVENT_COLOR: Record<EventType, string> = {
@@ -413,6 +454,7 @@ export const EVENT_COLOR: Record<EventType, string> = {
   beenden: "#00E676",     // grün
   admin_zeitkorrektur: "#FFD600",       // gelb (admin audit)
   admin_beenden_rueckgaengig: "#FFD600",
+  timeline: "#C084FC",    // helles lila (informativ, neutral)
 };
 
 export const STATUS_LABEL_DE: Record<WorkflowStatus, string> = {
