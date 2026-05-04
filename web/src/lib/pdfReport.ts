@@ -351,6 +351,12 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
     }
   }
 
+  // ===== SECTION: FOTOS =====
+  const photos = Array.isArray(task.photos) ? [...task.photos].sort((a, b) => new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime()) : [];
+  if (photos.length > 0) {
+    cursorY = await renderPhotosSection(doc, photos, persons, pageW, pageH, marginX, marginTop, marginBottom, cursorY);
+  }
+
   // ===== FOOTER (on every page) =====
   const totalPages = (doc as any).internal.getNumberOfPages();
   for (let i = 1; i <= totalPages; i++) {
@@ -416,3 +422,132 @@ export function triggerMobileSafeDownload(blob: Blob, filename: string) {
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 }
+
+/**
+ * Render the "Fotos" section with embedded high-quality images.
+ * - Fetches each Cloudinary URL as blob → dataURL (required by jsPDF addImage)
+ * - Arranges images in a 2-column grid, 1 page per page
+ * - Each image shows: Datum/Uhrzeit · Mitarbeiter · Kommentar
+ */
+async function renderPhotosSection(
+  doc: any,
+  photos: any[],
+  _persons: any[],
+  pageW: number,
+  pageH: number,
+  marginX: number,
+  marginTop: number,
+  marginBottom: number,
+  startY: number,
+): Promise<number> {
+  // Section header
+  let cursorY = startY;
+  if (cursorY > pageH - marginBottom - 40) { doc.addPage(); cursorY = marginTop; }
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9.5);
+  doc.setTextColor(0, 0, 0);
+  doc.text("FOTOS", marginX, cursorY);
+  doc.setDrawColor(120, 120, 120);
+  doc.setLineWidth(0.2);
+  doc.line(marginX, cursorY + 1.2, pageW - marginX, cursorY + 1.2);
+  cursorY += 6;
+
+  // 2 columns layout
+  const gap = 4;
+  const cols = 2;
+  const colW = (pageW - marginX * 2 - gap * (cols - 1)) / cols;
+  const imgH = 65;             // mm — generous size for readability
+  const captionH = 14;         // mm — space for metadata under image
+  const itemH = imgH + captionH + gap;
+
+  const fetchAsDataUrl = async (url: string): Promise<{ data: string; w: number; h: number } | null> => {
+    try {
+      const r = await fetch(url, { mode: "cors" });
+      if (!r.ok) return null;
+      const blob = await r.blob();
+      const data = await new Promise<string>((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(String(fr.result));
+        fr.onerror = () => rej(fr.error);
+        fr.readAsDataURL(blob);
+      });
+      // Load image to get dimensions for correct aspect ratio
+      const dim = await new Promise<{ w: number; h: number }>((res) => {
+        const img = new Image();
+        img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => res({ w: 1, h: 1 });
+        img.src = data;
+      });
+      return { data, w: dim.w, h: dim.h };
+    } catch { return null; }
+  };
+
+  for (let i = 0; i < photos.length; i++) {
+    const col = i % cols;
+    const x = marginX + col * (colW + gap);
+
+    if (col === 0) {
+      if (cursorY + itemH > pageH - marginBottom) { doc.addPage(); cursorY = marginTop; }
+    }
+
+    const p = photos[i];
+    const loaded = await fetchAsDataUrl(p.fullSizeUrl || p.url || p.thumbnailUrl);
+
+    // Frame
+    doc.setDrawColor(200, 200, 200);
+    doc.setLineWidth(0.2);
+    doc.rect(x, cursorY, colW, imgH);
+    doc.setFillColor(250, 250, 250);
+    doc.rect(x, cursorY, colW, imgH, "F");
+
+    if (loaded) {
+      // Fit-to-box (contain)
+      const ratio = loaded.w / loaded.h;
+      const boxRatio = colW / imgH;
+      let dw = colW, dh = imgH;
+      if (ratio > boxRatio) { dh = colW / ratio; } else { dw = imgH * ratio; }
+      const dx = x + (colW - dw) / 2;
+      const dy = cursorY + (imgH - dh) / 2;
+      try {
+        doc.addImage(loaded.data, "JPEG", dx, dy, dw, dh, undefined, "FAST");
+      } catch {
+        try { doc.addImage(loaded.data, "PNG", dx, dy, dw, dh, undefined, "FAST"); } catch {}
+      }
+    } else {
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(9);
+      doc.setTextColor(150, 150, 150);
+      doc.text("[Bild konnte nicht geladen werden]", x + 3, cursorY + imgH / 2);
+    }
+
+    // Metadata under image
+    const metaY = cursorY + imgH + 3;
+    const dateStr = (() => {
+      try {
+        const d = new Date(p.uploadedAt);
+        return `${d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Berlin" })} · ${d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" })}`;
+      } catch { return "—"; }
+    })();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(40, 40, 40);
+    doc.text(dateStr, x + 1, metaY);
+    if (p.uploadedBy) {
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(80, 80, 80);
+      const uLines = doc.splitTextToSize(p.uploadedBy, colW - 2);
+      doc.text(uLines, x + 1, metaY + 3.5);
+    }
+    if (p.caption) {
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(7.5);
+      doc.setTextColor(90, 90, 90);
+      const cLines = doc.splitTextToSize(p.caption, colW - 2);
+      doc.text(cLines.slice(0, 2), x + 1, metaY + 7);
+    }
+
+    if (col === cols - 1 || i === photos.length - 1) cursorY += itemH;
+  }
+  return cursorY;
+}
+

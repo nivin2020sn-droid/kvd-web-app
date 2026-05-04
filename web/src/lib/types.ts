@@ -2,6 +2,21 @@ export type TaskStatus = "pending" | "accepted" | "finished" | "cannot_accept" |
 
 export interface SimpleItem { id: string; name: string; }
 
+export interface TaskPhoto {
+  id: string;
+  url: string;
+  fullSizeUrl: string;
+  thumbnailUrl: string;
+  public_id: string;
+  uploadedAt: string;
+  uploadedBy: string;
+  caption: string;
+  width?: number;
+  height?: number;
+  bytes?: number;
+  format?: string;
+}
+
 export interface Task {
   id: string;
   task_type: string;
@@ -21,6 +36,7 @@ export interface Task {
   archived: boolean;
   archive_date?: string | null;
   task_date: string;
+  photos?: TaskPhoto[];
 }
 
 export interface AppSettings {

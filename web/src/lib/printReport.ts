@@ -379,6 +379,39 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     margin-bottom: 6px;
   }
 
+  /* ---- Fotos (print) ---- */
+  .photos-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin: 6px 0;
+  }
+  .photo-card {
+    border: 1px solid #bbb;
+    padding: 4px;
+    page-break-inside: avoid;
+    background: #fafafa;
+  }
+  .photo-img-wrap {
+    width: 100%;
+    height: 65mm;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-bottom: 1px solid #ddd;
+  }
+  .photo-img-wrap img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+  .photo-meta { padding: 4px 2px 2px; font-size: 8.5pt; line-height: 1.35; }
+  .photo-meta .photo-date { color: #000; }
+  .photo-meta .photo-user { color: #555; }
+  .photo-meta .photo-caption { font-style: italic; color: #444; margin-top: 2px; word-break: break-word; overflow-wrap: break-word; }
+
   /* ---- Footer ---- */
   .footer {
     margin-top: 28px;
@@ -487,6 +520,24 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     </tbody>
   </table>
   `)}
+
+  ${(task.photos && task.photos.length > 0) ? `
+  <h2>Fotos</h2>
+  <div class="photos-grid">
+    ${[...task.photos].sort((a,b)=>new Date(a.uploadedAt).getTime()-new Date(b.uploadedAt).getTime()).map(p => `
+      <div class="photo-card">
+        <div class="photo-img-wrap">
+          <img src="${esc(p.fullSizeUrl || p.url)}" loading="lazy" decoding="async" alt="Foto" />
+        </div>
+        <div class="photo-meta">
+          <div class="photo-date"><strong>${esc(fmtDate(p.uploadedAt))} · ${esc(fmtTime24(p.uploadedAt))}</strong></div>
+          ${p.uploadedBy ? `<div class="photo-user">${esc(p.uploadedBy)}</div>` : ''}
+          ${p.caption ? `<div class="photo-caption">„${esc(p.caption)}"</div>` : ''}
+        </div>
+      </div>
+    `).join('')}
+  </div>
+  ` : ''}
 
   <div class="footer">
     <div>Gedruckt am ${esc(printDateTime)}</div>

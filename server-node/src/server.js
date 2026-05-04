@@ -6,6 +6,8 @@ import { WebSocketServer } from 'ws';
 import http from 'http';
 import cron from 'node-cron';
 import { v4 as uuidv4 } from 'uuid';
+import { v2 as cloudinary } from 'cloudinary';
+import multer from 'multer';
 
 // ===== ENV =====
 const PORT = process.env.PORT || 8080;
@@ -13,6 +15,29 @@ const MONGO_URL = process.env.MONGO_URL;
 const DB_NAME = process.env.DB_NAME || 'reinigung';
 const DEFAULT_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const ADMIN_TOKEN = 'admin-session-token';
+
+// Cloudinary (signed uploads via backend ONLY — API secret never leaves server)
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || '';
+const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || '';
+const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || '';
+const CLOUDINARY_ENABLED = !!(CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET);
+if (CLOUDINARY_ENABLED) {
+  cloudinary.config({
+    cloud_name: CLOUDINARY_CLOUD_NAME,
+    api_key: CLOUDINARY_API_KEY,
+    api_secret: CLOUDINARY_API_SECRET,
+    secure: true,
+  });
+  console.log('✅ Cloudinary configured for cloud:', CLOUDINARY_CLOUD_NAME);
+} else {
+  console.warn('⚠ Cloudinary NOT configured — set CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET');
+}
+
+// Multer: keep uploaded files in memory (we stream them to Cloudinary without touching disk)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB per file
+});
 
 if (!MONGO_URL) {
   console.error('❌ MONGO_URL ist nicht gesetzt');
@@ -49,6 +74,25 @@ const TaskSchema = new mongoose.Schema({
   archived: { type: Boolean, default: false },
   archive_date: { type: String, default: null },
   task_date: { type: String, default: () => new Date().toISOString().slice(0, 10) },
+  // Photos attached to this task. Binary assets live in Cloudinary; MongoDB
+  // stores metadata + URLs only.
+  photos: {
+    type: [{
+      id: { type: String, default: uuidv4 },
+      url: String,            // convenience alias (= fullSizeUrl)
+      fullSizeUrl: String,    // high-res original
+      thumbnailUrl: String,   // ~400px wide for grid views
+      public_id: String,      // Cloudinary public_id (required for deletion)
+      uploadedAt: { type: String, default: () => new Date().toISOString() },
+      uploadedBy: { type: String, default: '' },
+      caption: { type: String, default: '' },
+      width: Number,
+      height: Number,
+      bytes: Number,
+      format: String,
+    }],
+    default: [],
+  },
 }, { versionKey: false });
 const TaskModel = mongoose.model('Task', TaskSchema, 'tasks');
 
@@ -238,6 +282,16 @@ router.patch('/tasks/:id/status', async (req, res) => {
 
 router.delete('/tasks/:id', requireAdmin, async (req, res) => {
   const permanent = req.query.permanent === '1' || req.query.permanent === 'true';
+  // Clean up any attached photos from Cloudinary before deleting the task
+  if (CLOUDINARY_ENABLED) {
+    try {
+      const t = await TaskModel.findOne({ id: req.params.id }, { _id: 0, photos: 1 }).lean();
+      const ids = (t?.photos || []).map(p => p.public_id).filter(Boolean);
+      if (ids.length) await cloudinary.api.delete_resources(ids).catch(() => {});
+      // Delete the whole folder as well (empty folder can be pruned too)
+      await cloudinary.api.delete_folder(`tasks/${req.params.id}`).catch(() => {});
+    } catch (e) { console.warn('Cloudinary cleanup (delete_task):', e.message); }
+  }
   if (permanent) {
     await TaskModel.deleteOne({ id: req.params.id });
     await WorkflowModel.deleteOne({ task_id: req.params.id });
@@ -247,6 +301,101 @@ router.delete('/tasks/:id', requireAdmin, async (req, res) => {
   await TaskModel.updateOne({ id: req.params.id }, { $set: { archived: true, archive_date: todayStr() } });
   broadcast({ type: 'tasks_updated' });
   res.json({ ok: true, archived: true });
+});
+
+// =================== PHOTOS / MEDIA ===================
+// Upload one file via multipart/form-data. Signed server-side using API secret;
+// no secret ever leaves the server. Image is stored under folder `tasks/{taskId}`.
+router.post('/tasks/:id/photos', upload.single('file'), async (req, res) => {
+  if (!CLOUDINARY_ENABLED) return res.status(503).json({ detail: 'Cloudinary nicht konfiguriert' });
+  if (!req.file || !req.file.buffer) return res.status(400).json({ detail: 'Keine Datei gesendet (Feld "file" erforderlich)' });
+  const taskId = req.params.id;
+  const task = await TaskModel.findOne({ id: taskId }, { _id: 0, id: 1 }).lean();
+  if (!task) return res.status(404).json({ detail: 'Aufgabe nicht gefunden' });
+  const caption = (req.body?.caption || '').toString().slice(0, 500);
+  const uploadedBy = (req.body?.uploadedBy || '').toString().slice(0, 120);
+
+  try {
+    // Stream buffer → Cloudinary upload
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: `tasks/${taskId}`,
+          resource_type: 'image',
+          // Keep full-quality original; transformations generate thumbnails on-the-fly
+          quality: 'auto:best',
+          fetch_format: 'auto',
+        },
+        (err, r) => err ? reject(err) : resolve(r),
+      );
+      stream.end(req.file.buffer);
+    });
+
+    // Derive a lightweight thumbnail URL via transformations (no extra storage)
+    const thumbnailUrl = cloudinary.url(result.public_id, {
+      secure: true,
+      width: 400,
+      height: 400,
+      crop: 'fill',
+      gravity: 'auto',
+      quality: 'auto',
+      fetch_format: 'auto',
+    });
+    const fullSizeUrl = result.secure_url;
+
+    const photo = {
+      id: uuidv4(),
+      url: fullSizeUrl,
+      fullSizeUrl,
+      thumbnailUrl,
+      public_id: result.public_id,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy,
+      caption,
+      width: result.width,
+      height: result.height,
+      bytes: result.bytes,
+      format: result.format,
+    };
+
+    const updated = await TaskModel.findOneAndUpdate(
+      { id: taskId },
+      { $push: { photos: photo } },
+      { new: true, projection: { _id: 0 } },
+    ).lean();
+    broadcast({ type: 'tasks_updated' });
+    res.json({ ok: true, photo, task: updated });
+  } catch (err) {
+    console.error('Photo upload failed:', err);
+    res.status(500).json({ detail: 'Upload fehlgeschlagen: ' + (err?.message || 'unbekannt') });
+  }
+});
+
+// List photos for a task (light endpoint — just returns the photos sub-array).
+router.get('/tasks/:id/photos', async (req, res) => {
+  const t = await TaskModel.findOne({ id: req.params.id }, { _id: 0, photos: 1 }).lean();
+  if (!t) return res.status(404).json({ detail: 'Aufgabe nicht gefunden' });
+  res.json({ photos: t.photos || [] });
+});
+
+// DELETE a single photo — Admin only. Removes from Cloudinary first, then Mongo.
+router.delete('/tasks/:taskId/photos/:photoId', requireAdmin, async (req, res) => {
+  const { taskId, photoId } = req.params;
+  const t = await TaskModel.findOne({ id: taskId }, { _id: 0, photos: 1 }).lean();
+  if (!t) return res.status(404).json({ detail: 'Aufgabe nicht gefunden' });
+  const photo = (t.photos || []).find(p => p.id === photoId);
+  if (!photo) return res.status(404).json({ detail: 'Foto nicht gefunden' });
+  try {
+    if (CLOUDINARY_ENABLED && photo.public_id) {
+      await cloudinary.uploader.destroy(photo.public_id, { resource_type: 'image', invalidate: true });
+    }
+  } catch (e) {
+    // Do NOT fail the whole operation if Cloudinary cleanup fails — log and continue.
+    console.warn('Cloudinary destroy failed:', e.message);
+  }
+  await TaskModel.updateOne({ id: taskId }, { $pull: { photos: { id: photoId } } });
+  broadcast({ type: 'tasks_updated' });
+  res.json({ ok: true, deleted: photoId });
 });
 
 // Reset archive – löscht NUR archivierte Aufgaben + zugehörige Workflows

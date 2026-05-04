@@ -30,6 +30,8 @@ import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent, DaySection
 import { adminCorrectTimes, adminUndoFinish, addTimelineEntry } from "./lib/workflow";
 import { printTaskReport } from "./lib/printReport";
 import { downloadTaskPdf } from "./lib/pdfReport";
+import { MediaModal } from "./components/MediaModal";
+import { installOfflineSync } from "./lib/photos";
 import { useAdminName, setAdminName } from "./lib/adminName";
 import { useAdminTheme, setAdminTheme, resolveBg, isDark as isDarkHex } from "./lib/adminTheme";
 import type { ThemeMode } from "./lib/adminTheme";
@@ -188,6 +190,7 @@ function AdminHome() {
   const [online, setOnline] = useState(!!getServerConfigSync());
   const [timeEditTask, setTimeEditTask] = useState<Task | null>(null);
   const [undoTask, setUndoTask] = useState<Task | null>(null);
+  const [mediaTask, setMediaTask] = useState<Task | null>(null);
   const [busyId, setBusyId] = useState<string>("");
   const tomorrowISO = (): string => {
     const todayBerlin = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
@@ -365,13 +368,22 @@ function AdminHome() {
                 </button>
               </div>
 
-              {/* PDF herunterladen (full-width, prominent) */}
-              <button
-                onClick={() => downloadTaskPdf(t, wf, persons)}
-                className="w-full h-11 rounded-lg border-2 border-brand-green/70 bg-brand-green/10 text-brand-green text-xs font-black tracking-[2px] active:scale-95 transition flex items-center justify-center gap-2 mt-1"
-              >
-                <Icon d={ICONS.pdf} size={15} color="#00E676" /> PDF HERUNTERLADEN
-              </button>
+              {/* Media + PDF herunterladen (prominent row) */}
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <button
+                  onClick={() => setMediaTask(t)}
+                  className="h-11 rounded-lg border-2 text-xs font-black tracking-[1.5px] active:scale-95 transition flex items-center justify-center gap-1.5"
+                  style={{ borderColor: "#EC4899", backgroundColor: "#EC489915", color: "#EC4899" }}
+                >
+                  📷 MEDIA ({t.photos?.length || 0})
+                </button>
+                <button
+                  onClick={() => downloadTaskPdf(t, wf, persons)}
+                  className="h-11 rounded-lg border-2 border-brand-green/70 bg-brand-green/10 text-brand-green text-xs font-black tracking-[1.5px] active:scale-95 transition flex items-center justify-center gap-1.5"
+                >
+                  <Icon d={ICONS.pdf} size={15} color="#00E676" /> PDF
+                </button>
+              </div>
 
               {/* Admin-Zeit-Aktionen */}
               <div className={`grid ${wfStatus === "finished" ? "grid-cols-2" : "grid-cols-1"} gap-2`}>
@@ -431,6 +443,15 @@ function AdminHome() {
             setUndoTask(null);
           } catch (e: any) { alert("Fehler: " + (e?.message || "")); } finally { setBusyId(""); }
         }}
+      />
+    )}
+    {mediaTask && (
+      <MediaModal
+        task={mediaTask}
+        isAdmin={true}
+        currentUserName="Admin"
+        onClose={() => setMediaTask(null)}
+        onPhotosChanged={() => load()}
       />
     )}
     </div>
@@ -1314,6 +1335,10 @@ function Tablet() {
   const [tlTime, setTlTime] = useState("");
   const [tlNote, setTlNote] = useState("");
   const [tlBusy, setTlBusy] = useState(false);
+  // Media modal (photo gallery)
+  const [mediaTask, setMediaTask] = useState<Task | null>(null);
+  // Install offline upload sync on mount
+  useEffect(() => { const stop = installOfflineSync(() => load()); return stop; /* eslint-disable-next-line */ }, []);
   // Toast for user feedback on non-destructive workflow actions (Feierabend)
   const [toast, setToast] = useState<{ msg: string; tone: "info" | "success" } | null>(null);
   const showToast = (msg: string, tone: "info" | "success" = "success", durationMs = 3800) => {
@@ -1529,12 +1554,12 @@ function Tablet() {
                   <ActionBtn label="Beenden" color={EVENT_COLOR.beenden} disabled={!allowed.beenden} onClick={() => openAction(t, "beenden")} dark={dark} />
                 </div>
 
-                {/* Feierabend + Timeline row (Mitarbeiter-Aktionen, informativ) */}
-                <div className="grid grid-cols-2 gap-2 mt-1">
+                {/* Feierabend + Media + Timeline row (Mitarbeiter-Aktionen, informativ) */}
+                <div className="grid grid-cols-3 gap-2 mt-1">
                   <button
                     onClick={() => openAction(t, "feierabend")}
                     disabled={!allowed.feierabend}
-                    className="h-11 rounded-xl border-2 font-black text-xs tracking-[2px] active:scale-95 transition flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="h-11 rounded-xl border-2 font-black text-[11px] tracking-[1.5px] active:scale-95 transition flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
                     style={{
                       borderColor: EVENT_COLOR.feierabend,
                       backgroundColor: allowed.feierabend ? EVENT_COLOR.feierabend : (dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)"),
@@ -1545,11 +1570,18 @@ function Tablet() {
                     FEIERABEND
                   </button>
                   <button
+                    onClick={() => setMediaTask(t)}
+                    className="h-11 rounded-xl border-2 font-black text-[11px] tracking-[1.5px] active:scale-95 transition flex items-center justify-center gap-1.5"
+                    style={{ borderColor: "#EC4899", backgroundColor: "#EC489915", color: "#EC4899" }}
+                  >
+                    📷 MEDIA ({t.photos?.length || 0})
+                  </button>
+                  <button
                     onClick={() => openTimeline(t)}
-                    className="h-11 rounded-xl border-2 font-black text-xs tracking-[2px] active:scale-95 transition flex items-center justify-center gap-2"
+                    className="h-11 rounded-xl border-2 font-black text-[11px] tracking-[1.5px] active:scale-95 transition flex items-center justify-center gap-1.5"
                     style={{ borderColor: EVENT_COLOR.timeline, backgroundColor: EVENT_COLOR.timeline + "15", color: EVENT_COLOR.timeline }}
                   >
-                    <Icon d={ICONS.timeline} size={15} color={EVENT_COLOR.timeline} /> TIMELINE
+                    <Icon d={ICONS.timeline} size={13} color={EVENT_COLOR.timeline} /> TIMELINE
                   </button>
                 </div>
               </div>
@@ -1654,6 +1686,15 @@ function Tablet() {
           busy={tlBusy}
           onCancel={() => { setTlModal(null); setTlNote(""); setTlTime(""); }}
           onConfirm={confirmTimeline}
+        />
+      )}
+      {mediaTask && (
+        <MediaModal
+          task={mediaTask}
+          isAdmin={false}
+          currentUserName={mediaTask.person_ids.map(pn).join(", ") || "Mitarbeiter"}
+          onClose={() => setMediaTask(null)}
+          onPhotosChanged={() => load()}
         />
       )}
     </div>
