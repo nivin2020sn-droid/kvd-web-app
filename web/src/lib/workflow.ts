@@ -28,16 +28,21 @@ const USER_EVENT_TYPES: Set<EventType> = new Set([
 
 export interface WorkflowEvent {
   type: EventType;
-  ts: string; // ISO datetime
+  ts: string; // ISO datetime (for chronological sort)
   note: string;
   status_before: WorkflowStatus;
   status_after: WorkflowStatus;
   task_name: string;
   undone?: boolean;
   undone_at?: string;
-  corrections?: Array<{ target_type: EventType; index: number; old_ts: string; new_ts: string }>;
+  corrections?: Array<{ target_type: EventType; index: number; old_ts: string; new_ts: string; new_display_time?: string; new_display_date?: string }>;
   created_by?: string;
   persons?: string[]; // snapshot of task.person_ids at the time of this event
+  // Plain-text values for MANUAL entries (Timeline, Admin-Zeitkorrektur). When
+  // these are set, the UI/print/PDF MUST use them directly and NEVER convert
+  // from `ts` (to avoid any timezone drift between server/client browsers).
+  display_time?: string; // "HH:MM" as entered by user
+  display_date?: string; // "YYYY-MM-DD" as entered by user
 }
 
 export interface TaskWorkflow {
@@ -236,7 +241,7 @@ export function totalWorkMs(wf: TaskWorkflow, nowMs?: number): number {
 /** Call server Admin endpoint: edit event timestamps + append audit event. */
 export async function adminCorrectTimes(
   task_id: string,
-  updates: Array<{ index: number; ts: string }>,
+  updates: Array<{ index: number; ts: string; display_time?: string; display_date?: string }>,
   admin_note: string,
   task_name: string,
 ): Promise<TaskWorkflow> {
@@ -258,7 +263,16 @@ export async function adminCorrectTimes(
     if (!ev || !USER_EVENT_TYPES.has(ev.type)) continue;
     const old_ts = ev.ts;
     ev.ts = new Date(u.ts).toISOString();
-    corrections.push({ target_type: ev.type, index: u.index, old_ts, new_ts: ev.ts });
+    if (u.display_time) ev.display_time = u.display_time;
+    if (u.display_date) ev.display_date = u.display_date;
+    corrections.push({
+      target_type: ev.type,
+      index: u.index,
+      old_ts,
+      new_ts: ev.ts,
+      new_display_time: u.display_time,
+      new_display_date: u.display_date,
+    });
   }
   wf.events.push({
     type: "admin_zeitkorrektur",
@@ -323,30 +337,34 @@ export async function addTimelineEntry(
   task_name: string,
   created_by = "Mitarbeiter",
 ): Promise<TaskWorkflow> {
+  const m = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!m) throw new Error("time muss HH:MM sein");
+  // Today's date in Europe/Berlin as YYYY-MM-DD (independent of viewer's TZ)
+  const todayISO = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
   if (loadServerConfig()) {
     const res = await api<TaskWorkflow>(`/workflows/${task_id}/timeline`, {
       method: "POST",
-      body: { time, note, task_name, created_by },
+      body: { time, date: todayISO, note, task_name, created_by },
     });
     saveWorkflow(res);
     return res;
   }
-  // Offline: append locally
+  // Offline: append locally. Store PLAIN-TEXT time+date (no TZ conversion).
   const wf = { ...getWorkflow(task_id) };
   wf.events = [...(wf.events || [])];
-  const m = /^(\d{2}):(\d{2})$/.exec(time);
-  if (!m) throw new Error("time muss HH:MM sein");
-  const [h, mi] = [parseInt(m[1], 10), parseInt(m[2], 10)];
-  const d = new Date();
-  d.setHours(h, mi, 0, 0);
+  // Build a `ts` that ONLY serves for chronological sort — marked as UTC to
+  // preserve order within the day. Display code MUST use display_time/_date.
+  const ts = `${todayISO}T${time}:00.000Z`;
   wf.events.push({
     type: "timeline",
-    ts: d.toISOString(),
+    ts,
     note,
     status_before: wf.status,
     status_after: wf.status,
     task_name,
     created_by,
+    display_time: time,      // <— plain-text, as entered
+    display_date: todayISO,  // <— plain-text YYYY-MM-DD
   });
   saveWorkflow(wf);
   return wf;
@@ -431,7 +449,14 @@ export function formatDuration(ms: number): string {
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    // LOCK display to Europe/Berlin so values are identical regardless of
+    // which device/TZ the viewer is on (fixes 10:00 → 12:00 on UTC servers).
+    return new Date(iso).toLocaleTimeString("de-DE", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZone: "Europe/Berlin",
+    });
   } catch {
     return "—";
   }
@@ -441,12 +466,53 @@ export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   try {
     const d = new Date(iso);
-    const date = d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
-    const time = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const date = d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Berlin" });
+    const time = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Europe/Berlin" });
     return `${date} · ${time}`;
   } catch {
     return "—";
   }
+}
+
+/** German-formatted date string. Always interpreted in Europe/Berlin. */
+export function formatDateDE(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Berlin" });
+  } catch { return "—"; }
+}
+
+/**
+ * Get the user-facing TIME string for an event.
+ *  - For MANUAL entries (Timeline, Admin-Zeitkorrektur) the user-entered text
+ *    is stored in `display_time` and returned AS-IS — no timezone math.
+ *  - For automatic events (Starten/Pause/Fortsetzen/Beenden/Feierabend …) we
+ *    format the ISO timestamp in Europe/Berlin so all devices agree.
+ */
+export function eventDisplayTime(ev: WorkflowEvent, opts?: { withSeconds?: boolean }): string {
+  if (ev.display_time && /^\d{2}:\d{2}/.test(ev.display_time)) return ev.display_time;
+  if (!ev.ts) return "—";
+  try {
+    return new Date(ev.ts).toLocaleTimeString("de-DE", {
+      hour: "2-digit",
+      minute: "2-digit",
+      ...(opts?.withSeconds ? { second: "2-digit" } : {}),
+      hour12: false,
+      timeZone: "Europe/Berlin",
+    });
+  } catch { return "—"; }
+}
+
+/** Get the user-facing DATE string for an event (DD.MM.YYYY). */
+export function eventDisplayDate(ev: WorkflowEvent): string {
+  if (ev.display_date && /^\d{4}-\d{2}-\d{2}$/.test(ev.display_date)) {
+    const [y, mo, d] = ev.display_date.split("-");
+    return `${d}.${mo}.${y}`;
+  }
+  if (!ev.ts) return "—";
+  try {
+    return new Date(ev.ts).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Berlin" });
+  } catch { return "—"; }
 }
 
 /** Total time spent paused (sum of gaps between segment ends and next segment starts). */

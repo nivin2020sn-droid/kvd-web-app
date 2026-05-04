@@ -28,13 +28,28 @@ function esc(s: unknown): string {
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }); }
+  try { return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Berlin" }); }
   catch { return "—"; }
 }
 function fmtTime24(iso: string | null | undefined): string {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }); }
+  try { return new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Europe/Berlin" }); }
   catch { return "—"; }
+}
+/** Display helpers that honour plain-text `display_time`/`display_date` when present. */
+function evTime(ev: WorkflowEvent): string {
+  if (ev.display_time && /^\d{2}:\d{2}/.test(ev.display_time)) {
+    // Admin may have entered "HH:MM" — render with ":00" seconds to keep tabular alignment
+    return `${ev.display_time}:00`;
+  }
+  return fmtTime24(ev.ts);
+}
+function evDate(ev: WorkflowEvent): string {
+  if (ev.display_date && /^\d{4}-\d{2}-\d{2}$/.test(ev.display_date)) {
+    const [y, m, d] = ev.display_date.split("-");
+    return `${d}.${m}.${y}`;
+  }
+  return fmtDate(ev.ts);
 }
 
 /** Build a chronological list combining workflow events and timeline events. */
@@ -82,7 +97,7 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     const typeLabel = EVENT_LABEL[ev.type] || ev.type;
     const undone = ev.undone ? " (zurückgenommen)" : "";
     const corr = ev.corrections && ev.corrections.length
-      ? `<div class="corrections">${ev.corrections.map((co) => `&bull; ${esc(EVENT_LABEL[co.target_type])}: ${esc(fmtTime24(co.old_ts))} &rarr; ${esc(fmtTime24(co.new_ts))}`).join("<br>")}</div>`
+      ? `<div class="corrections">${ev.corrections.map((co) => `&bull; ${esc(EVENT_LABEL[co.target_type])}: ${esc(fmtTime24(co.old_ts))} &rarr; ${esc(co.new_display_time ? co.new_display_time + ':00' : fmtTime24(co.new_ts))}`).join("<br>")}</div>`
       : "";
     const noteText = ev.note ? esc(ev.note) : `<span class="muted">—</span>`;
     const createdBy = ev.created_by ? ` <span class="muted">(${esc(ev.created_by)})</span>` : "";
@@ -90,7 +105,7 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     return `
       <tr class="${cls}">
         <td class="col-typ"><strong>${esc(typeLabel)}</strong>${esc(undone)}${createdBy}</td>
-        <td class="col-zeit">${esc(fmtTime24(ev.ts))}<div class="muted small">${esc(fmtDate(ev.ts))}</div></td>
+        <td class="col-zeit">${esc(evTime(ev))}<div class="muted small">${esc(evDate(ev))}</div></td>
         <td class="col-notiz">${noteText}${corr}</td>
       </tr>`;
   };

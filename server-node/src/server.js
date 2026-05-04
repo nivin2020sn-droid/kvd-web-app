@@ -480,7 +480,17 @@ router.post('/workflows/:task_id/admin-correct-times', requireAdmin, async (req,
     if (!USER_EVENT_TYPES.has(ev.type)) continue; // nur Arbeits-Events korrigierbar
     const old_ts = ev.ts;
     ev.ts = new Date(u.ts).toISOString();
-    corrections.push({ target_type: ev.type, index: idx, old_ts, new_ts: ev.ts });
+    // Plain-text display values (no TZ conversion). Preserve if caller provided.
+    if (typeof u.display_time === 'string' && /^\d{2}:\d{2}$/.test(u.display_time)) ev.display_time = u.display_time;
+    if (typeof u.display_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(u.display_date)) ev.display_date = u.display_date;
+    corrections.push({
+      target_type: ev.type,
+      index: idx,
+      old_ts,
+      new_ts: ev.ts,
+      new_display_time: ev.display_time,
+      new_display_date: ev.display_date,
+    });
   }
   // Admin-Audit-Event anhängen
   wf.events.push({
@@ -538,9 +548,14 @@ router.post('/workflows/:task_id/timeline', async (req, res) => {
   if (!m) return res.status(400).json({ detail: 'time muss HH:MM sein' });
   const h = parseInt(m[1], 10); const min = parseInt(m[2], 10);
   if (h < 0 || h > 23 || min < 0 || min > 59) return res.status(400).json({ detail: 'Ungültige Uhrzeit' });
-  const baseDate = date ? new Date(date + 'T00:00:00') : new Date();
-  baseDate.setHours(h, min, 0, 0);
-  const ts = baseDate.toISOString();
+  // Store the user-entered values VERBATIM as plain strings (no TZ conversion).
+  // This is what the UI will display. `ts` is kept only for chronological sort.
+  const todayISO = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' }); // YYYY-MM-DD
+  const display_date = (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) ? date : todayISO;
+  const display_time = time;
+  // `ts` marked as UTC so chronological sort within a day is consistent regardless
+  // of server TZ. The displayed value MUST come from display_time/display_date.
+  const ts = `${display_date}T${display_time}:00.000Z`;
 
   const existing = await WorkflowModel.findOne({ task_id: req.params.task_id }, { _id: 0 }).lean();
   const base = existing || {
@@ -558,6 +573,8 @@ router.post('/workflows/:task_id/timeline', async (req, res) => {
     status_after: wf.status, // unverändert
     task_name: task_name || '',
     created_by: created_by || 'Mitarbeiter',
+    display_time,
+    display_date,
   });
   // WICHTIG: Status, Segmente und Zeiten bleiben unverändert
   await WorkflowModel.findOneAndUpdate({ task_id: req.params.task_id }, { $set: wf }, { upsert: true });

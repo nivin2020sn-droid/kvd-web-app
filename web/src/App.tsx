@@ -23,6 +23,8 @@ import {
   STATUS_COLOR,
   allowedActions,
   buildDailyBreakdown,
+  eventDisplayTime,
+  eventDisplayDate,
 } from "./lib/workflow";
 import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent, DaySection } from "./lib/workflow";
 import { adminCorrectTimes, adminUndoFinish, addTimelineEntry } from "./lib/workflow";
@@ -428,7 +430,7 @@ function TimeEditModal({ task, workflow, busy, onClose, onSave }: {
   const [note, setNote] = useState("");
 
   const handleSave = async () => {
-    const updates: Array<{ index: number; ts: string }> = [];
+    const updates: Array<{ index: number; ts: string; display_time?: string; display_date?: string }> = [];
     for (const { e, i } of editable) {
       const newHHMM = times[i];
       if (!newHHMM) continue;
@@ -437,7 +439,11 @@ function TimeEditModal({ task, workflow, busy, onClose, onSave }: {
       const d = new Date(e.ts);
       d.setHours(h, m, 0, 0);
       const newIso = d.toISOString();
-      if (newIso !== e.ts) updates.push({ index: i, ts: newIso });
+      if (newIso !== e.ts || newHHMM !== (e.display_time || "")) {
+        // Plain-text display values — ensure NO TZ conversion on display.
+        const display_date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        updates.push({ index: i, ts: newIso, display_time: newHHMM, display_date });
+      }
     }
     if (updates.length === 0) { onClose(); return; }
     await onSave(updates, note);
@@ -557,7 +563,7 @@ function EventHistoryList({ events, dark = true, max = 50 }: { events: WorkflowE
                 <div className="flex items-baseline gap-2 flex-wrap">
                   <span className="text-xs font-black tracking-wide" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>{EVENT_LABEL[ev.type] || ev.type}</span>
                   {undone && <span className="text-[10px] font-bold text-brand-yellow">(zurückgenommen)</span>}
-                  <span className="text-[10px] font-mono opacity-70" style={{ color: dark ? "#fff" : "#000" }}>{formatDateTime(ev.ts)}</span>
+                  <span className="text-[10px] font-mono opacity-70" style={{ color: dark ? "#fff" : "#000" }}>{eventDisplayDate(ev)} · {eventDisplayTime(ev, { withSeconds: true })}</span>
                 </div>
                 {ev.note ? (
                   <div className="text-xs italic mt-0.5" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>„{ev.note}"</div>
@@ -568,7 +574,7 @@ function EventHistoryList({ events, dark = true, max = 50 }: { events: WorkflowE
                   <div className="mt-1 space-y-0.5">
                     {ev.corrections.map((co, k) => (
                       <div key={k} className="text-[10px] font-mono opacity-80" style={{ color: c }}>
-                        ↳ {EVENT_LABEL[co.target_type]}: {new Date(co.old_ts).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} → {new Date(co.new_ts).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
+                        ↳ {EVENT_LABEL[co.target_type]}: {new Date(co.old_ts).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" })} → {co.new_display_time ? co.new_display_time : new Date(co.new_ts).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" })}
                       </div>
                     ))}
                   </div>
@@ -658,7 +664,7 @@ function DailyBreakdownView({ wf, persons, dark = true }: { wf: TaskWorkflow; pe
                       <div className="flex items-baseline gap-2 flex-wrap">
                         <span className="text-xs font-black tracking-wide" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>{EVENT_LABEL[ev.type] || ev.type}</span>
                         {undone && <span className="text-[10px] font-bold text-brand-yellow">(zurückgenommen)</span>}
-                        <span className="text-[10px] font-mono opacity-70" style={{ color: txt }}>{new Date(ev.ts).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}</span>
+                        <span className="text-[10px] font-mono opacity-70" style={{ color: txt }}>{eventDisplayTime(ev, { withSeconds: true })}</span>
                       </div>
                       {ev.note ? (
                         <div className="text-xs italic mt-0.5" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>„{ev.note}"</div>

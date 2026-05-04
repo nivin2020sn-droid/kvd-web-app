@@ -12,13 +12,24 @@ import { loadServerConfig } from "./serverConfig";
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }); }
+  try { return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Berlin" }); }
   catch { return "—"; }
 }
 function fmtTime24(iso: string | null | undefined): string {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }); }
+  try { return new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Europe/Berlin" }); }
   catch { return "—"; }
+}
+function evTime(ev: WorkflowEvent): string {
+  if (ev.display_time && /^\d{2}:\d{2}/.test(ev.display_time)) return `${ev.display_time}:00`;
+  return fmtTime24(ev.ts);
+}
+function evDate(ev: WorkflowEvent): string {
+  if (ev.display_date && /^\d{4}-\d{2}-\d{2}$/.test(ev.display_date)) {
+    const [y, m, d] = ev.display_date.split("-");
+    return `${d}.${m}.${y}`;
+  }
+  return fmtDate(ev.ts);
 }
 function sanitizeFilename(s: string): string {
   return s.replace(/[^a-zA-Z0-9äöüÄÖÜß_-]+/g, "_").replace(/^_+|_+$/g, "");
@@ -223,10 +234,10 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
       const undone = ev.undone ? " (zurückgenommen)" : "";
       const creator = ev.created_by ? `\n(${ev.created_by})` : "";
       const typCell = `${typeLabel}${undone}${creator}`;
-      const zeitCell = `${fmtTime24(ev.ts)}\n${fmtDate(ev.ts)}`;
+      const zeitCell = `${evTime(ev)}\n${evDate(ev)}`;
       let notizCell = ev.note || "—";
       if (ev.corrections && ev.corrections.length) {
-        const corrStr = ev.corrections.map((co) => `• ${EVENT_LABEL[co.target_type]}: ${fmtTime24(co.old_ts)} → ${fmtTime24(co.new_ts)}`).join("\n");
+        const corrStr = ev.corrections.map((co) => `• ${EVENT_LABEL[co.target_type]}: ${fmtTime24(co.old_ts)} → ${co.new_display_time ? co.new_display_time + ':00' : fmtTime24(co.new_ts)}`).join("\n");
         notizCell = notizCell === "—" ? corrStr : `${notizCell}\n${corrStr}`;
       }
       return { typ: typCell, zeit: zeitCell, notiz: notizCell, _undone: !!ev.undone };
@@ -359,5 +370,49 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
 
   // Save: Aufgabe_<YYYY-MM-DD>_<Aufgabentyp>.pdf
   const filename = `Aufgabe_${datumISO}_${sanitizeFilename(task.task_type || "Aufgabe")}.pdf`;
-  doc.save(filename);
+  // Mobile-safe download: do NOT rely on doc.save() which can silently fail on
+  // Android Chrome / iOS Safari. Generate a real Blob and attach an anchor to
+  // the DOM with an explicit `download` attribute. Avoid display:none.
+  const blob: Blob = (doc.output as any)("blob");
+  triggerMobileSafeDownload(blob, filename);
+}
+
+/**
+ * Robust download helper that works across:
+ *  - Desktop Chrome/Firefox/Edge/Safari
+ *  - Android Chrome (where window.open + data URI is blocked/empty)
+ *  - iOS Safari (where `download` attribute is partially supported)
+ *
+ * Strategy: create a real <a> element *visible* on screen (off-screen via
+ * transform) with `download` attribute → synthesize click event → revoke URL
+ * after the browser has started the download.
+ */
+export function triggerMobileSafeDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    a.target = "_blank"; // iOS Safari fallback: opens in new tab if download attr unsupported
+    // Off-screen but NOT display:none (Android sometimes ignores hidden anchors)
+    a.style.position = "fixed";
+    a.style.left = "-9999px";
+    a.style.top = "0";
+    a.style.opacity = "0";
+    a.style.pointerEvents = "none";
+    document.body.appendChild(a);
+    // Use a real MouseEvent so Android dispatches the download correctly
+    const evt = new MouseEvent("click", { bubbles: true, cancelable: true, view: window });
+    a.dispatchEvent(evt);
+    // Cleanup on next tick (some browsers need the anchor alive briefly)
+    setTimeout(() => {
+      try { document.body.removeChild(a); } catch {}
+      URL.revokeObjectURL(url);
+    }, 1500);
+  } catch (e) {
+    // Last-resort fallback: open in new tab so user can long-press → save
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
 }
