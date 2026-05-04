@@ -1394,26 +1394,38 @@ function Tablet() {
             void tick;
             const lastEventColor = wf.last_event_type ? EVENT_COLOR[wf.last_event_type] : "#9CA3AF";
             return (
-              <div key={t.id} className="border rounded-2xl p-4 space-y-2.5 shadow-lg" style={{ backgroundColor: dark ? "rgba(15,15,18,0.88)" : "rgba(255,255,255,0.92)", borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)", color: dark ? "#fff" : "#000" }}>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/5">
+              <div key={t.id} className="border rounded-2xl p-4 space-y-2.5 shadow-lg overflow-hidden" style={{ backgroundColor: dark ? "rgba(15,15,18,0.88)" : "rgba(255,255,255,0.92)", borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)", color: dark ? "#fff" : "#000", maxWidth: "100%" }}>
+                <div className="flex items-start gap-3 flex-wrap">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/5 shrink-0">
                     <span className="font-extrabold">{t.time_from}</span>
                     <span className="opacity-60">—</span>
                     <span className="font-extrabold">{t.time_to}</span>
                   </div>
-                  <div className="flex-1 min-w-[120px]">
-                    <div className="text-lg font-extrabold">{t.task_type}</div>
-                    <div className="text-xs font-bold tracking-widest" style={{ color: textMuted }}>HAUS {t.haus} · STATION {t.station}</div>
+                  <div className="flex-1 min-w-[120px] max-w-full overflow-hidden">
+                    <div
+                      className="text-lg font-extrabold leading-tight"
+                      style={{ overflowWrap: "break-word", wordBreak: "break-word", whiteSpace: "normal", maxWidth: "100%" }}
+                    >
+                      {t.task_type}
+                    </div>
+                    <div
+                      className="text-xs font-bold tracking-widest mt-0.5"
+                      style={{ color: textMuted, overflowWrap: "break-word", wordBreak: "break-word" }}
+                    >
+                      HAUS {t.haus} · STATION {t.station}
+                    </div>
                   </div>
                   {/* Status badge (workflow) */}
-                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "15" }}>
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border shrink-0" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "15" }}>
                     <span className="w-2 h-2 rounded-full" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
                     <span className="text-xs font-bold" style={{ color: STATUS_COLOR[wfStatus] }}>{STATUS_LABEL_DE[wfStatus]}</span>
                   </div>
                 </div>
 
-                {t.description && <div className="text-sm">{t.description}</div>}
-                <div className="text-sm italic" style={{ color: textMuted }}>{t.person_ids.map(pn).join(" · ") || "—"}</div>
+                {t.description && (
+                  <div className="text-sm" style={{ overflowWrap: "break-word", wordBreak: "break-word", whiteSpace: "normal" }}>{t.description}</div>
+                )}
+                <div className="text-sm italic" style={{ color: textMuted, overflowWrap: "break-word", wordBreak: "break-word" }}>{t.person_ids.map(pn).join(" · ") || "—"}</div>
 
                 {/* Workflow info grid */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1">

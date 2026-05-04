@@ -7,7 +7,8 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow } from "./workflow";
+import { loadServerConfig } from "./serverConfig";
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -23,7 +24,55 @@ function sanitizeFilename(s: string): string {
   return s.replace(/[^a-zA-Z0-9äöüÄÖÜß_-]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
-export function downloadTaskPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[]) {
+/**
+ * Resolve the freshest workflow available (server > local). We try (best-effort)
+ * to pull the latest from the configured server so the PDF reflects the current
+ * state, but never blocks long: we fall back to the local workflow on any error
+ * or after a short timeout.
+ */
+async function resolveWorkflow(taskId: string, fallback: TaskWorkflow | null): Promise<TaskWorkflow | null> {
+  if (loadServerConfig()) {
+    try {
+      const all = await Promise.race([
+        fetchAllWorkflows(),
+        new Promise<Record<string, TaskWorkflow>>((_, rej) => setTimeout(() => rej(new Error("timeout")), 4000)),
+      ]);
+      if (all && all[taskId]) return all[taskId];
+    } catch {}
+  }
+  // Local fallback
+  try { return getWorkflow(taskId) || fallback; } catch { return fallback; }
+}
+
+export async function downloadTaskPdf(task: Task | null | undefined, wf: TaskWorkflow | null, persons: SimpleItem[]) {
+  // ---- Validation: refuse to export if there is nothing meaningful to print ----
+  if (!task || !task.id) {
+    alert("Keine Daten zum Export");
+    return;
+  }
+
+  try {
+    // Always fetch the latest workflow data — this fixes "empty PDF" caused by
+    // stale state when the user clicks the button before the workflow finished loading.
+    const freshWf = await resolveWorkflow(task.id, wf);
+
+    // If there is literally NOTHING to put into the PDF beyond the task header,
+    // we still allow export, but only when the task itself looks valid.
+    const hasEvents = !!(freshWf && freshWf.events && freshWf.events.length);
+    const hasTaskHeader = !!(task.task_type && task.task_type.trim().length);
+    if (!hasTaskHeader && !hasEvents) {
+      alert("Keine Daten zum Export");
+      return;
+    }
+
+    await renderPdf(task, freshWf, persons || []);
+  } catch (err: any) {
+    console.error("PDF export failed:", err);
+    alert("PDF-Export fehlgeschlagen: " + (err?.message || "Unbekannter Fehler"));
+  }
+}
+
+async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[]) {
   const personNames = task.person_ids.map((id) => persons.find((p) => p.id === id)?.name || "—").join(", ") || "—";
   const workMs = wf ? totalWorkMs(wf) : 0;
   const pauseMs = wf ? totalPauseMs(wf) : 0;

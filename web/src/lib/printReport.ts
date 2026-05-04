@@ -6,7 +6,21 @@
 
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow } from "./workflow";
+import { loadServerConfig } from "./serverConfig";
+
+async function resolvePrintWorkflow(taskId: string, fallback: TaskWorkflow | null): Promise<TaskWorkflow | null> {
+  if (loadServerConfig()) {
+    try {
+      const all = await Promise.race([
+        fetchAllWorkflows(),
+        new Promise<Record<string, TaskWorkflow>>((_, rej) => setTimeout(() => rej(new Error("timeout")), 4000)),
+      ]);
+      if (all && all[taskId]) return all[taskId];
+    } catch {}
+  }
+  try { return getWorkflow(taskId) || fallback; } catch { return fallback; }
+}
 
 function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -29,7 +43,27 @@ function buildEventRows(wf: TaskWorkflow | null): WorkflowEvent[] {
   return [...wf.events].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
 }
 
-export function printTaskReport(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[]) {
+export async function printTaskReport(task: Task | null | undefined, wf: TaskWorkflow | null, persons: SimpleItem[]) {
+  if (!task || !task.id) {
+    alert("Keine Daten zum Export");
+    return;
+  }
+  let freshWf: TaskWorkflow | null = wf;
+  try {
+    freshWf = await resolvePrintWorkflow(task.id, wf);
+  } catch {}
+
+  const hasEvents = !!(freshWf && freshWf.events && freshWf.events.length);
+  const hasTaskHeader = !!(task.task_type && task.task_type.trim().length);
+  if (!hasTaskHeader && !hasEvents) {
+    alert("Keine Daten zum Export");
+    return;
+  }
+
+  renderPrint(task, freshWf, persons || []);
+}
+
+function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[]) {
   const pn = (id: string) => persons.find((p) => p.id === id)?.name || "—";
   const personNames = task.person_ids.map(pn).join(", ") || "—";
   const workMs = wf ? totalWorkMs(wf) : 0;
