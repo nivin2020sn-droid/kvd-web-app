@@ -252,10 +252,37 @@ router.get('/tasks/by-date', async (req, res) => {
   res.json(await TaskModel.find({ archived: false, task_date: date }, { _id: 0 }).lean());
 });
 
+// Alias matching the spec the user asked for: GET /api/tasks?date=YYYY-MM-DD
+//   - Without ?date → returns all non-archived tasks (across every date) ordered by date
+//   - With ?date    → identical to /tasks/by-date
+router.get('/tasks', async (req, res) => {
+  const date = String(req.query.date || '').trim();
+  if (date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: 'date muss YYYY-MM-DD sein' });
+    return res.json(await TaskModel.find({ archived: false, task_date: date }, { _id: 0 }).lean());
+  }
+  res.json(await TaskModel.find({ archived: false }, { _id: 0 }).sort({ task_date: -1 }).lean());
+});
+
+// Distinct list of dates that have tasks (used by Admin date-jump UI).
+router.get('/tasks/dates', async (req, res) => {
+  const rows = await TaskModel.aggregate([
+    { $match: { archived: false } },
+    { $group: { _id: '$task_date', count: { $sum: 1 } } },
+    { $sort: { _id: -1 } },
+  ]);
+  res.json(rows.map(r => ({ date: r._id, count: r.count })));
+});
+
 router.post('/tasks', requireAdmin, async (req, res) => {
   const b = req.body || {};
   if (!b.task_type || !b.haus || !b.station || !b.time_from || !b.time_to) {
     return res.status(400).json({ detail: 'Fehlende Pflichtfelder' });
+  }
+  // Allow Admin to set a custom task_date (today, tomorrow, or any future/past day).
+  let taskDate = todayStr();
+  if (b.task_date && /^\d{4}-\d{2}-\d{2}$/.test(String(b.task_date))) {
+    taskDate = String(b.task_date);
   }
   const task = await TaskModel.create({
     id: uuidv4(),
@@ -266,7 +293,7 @@ router.post('/tasks', requireAdmin, async (req, res) => {
     person_ids: b.person_ids || [],
     time_from: b.time_from,
     time_to: b.time_to,
-    task_date: todayStr(),
+    task_date: taskDate,
   });
   broadcast({ type: 'tasks_updated' });
   const obj = task.toObject();
@@ -277,9 +304,12 @@ router.post('/tasks', requireAdmin, async (req, res) => {
 // Update (Bearbeiten)
 router.put('/tasks/:id', requireAdmin, async (req, res) => {
   const b = req.body || {};
-  const allowed = ['task_type', 'haus', 'station', 'description', 'person_ids', 'time_from', 'time_to'];
+  const allowed = ['task_type', 'haus', 'station', 'description', 'person_ids', 'time_from', 'time_to', 'task_date'];
   const update = {};
   for (const k of allowed) if (b[k] !== undefined) update[k] = b[k];
+  if (update.task_date && !/^\d{4}-\d{2}-\d{2}$/.test(String(update.task_date))) {
+    return res.status(400).json({ detail: 'task_date muss YYYY-MM-DD sein' });
+  }
   const r = await TaskModel.findOneAndUpdate({ id: req.params.id }, { $set: update }, { new: true, projection: { _id: 0 } }).lean();
   if (!r) return res.status(404).json({ detail: 'Task not found' });
   broadcast({ type: 'tasks_updated' });

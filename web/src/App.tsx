@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Routes, Route, useNavigate, useLocation, useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Routes, Route, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { Icon, ICONS } from "./components/Icons";
 import { api, setToken } from "./lib/api";
 import { useWebSocket } from "./lib/useWebSocket";
@@ -180,9 +180,41 @@ function AdminHome() {
   const theme = useAdminTheme();
   const bgColor = resolveBg(theme);
   const darkScope = isDarkHex(bgColor);
-  const [tab, setTab] = useState<"heute" | "morgen">("heute");
+
+  // ---- Date helpers (Berlin TZ) ----
+  const todayISO = (): string => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
+  const addDaysISO = (iso: string, n: number): string => {
+    const d = new Date(iso + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const formatGermanDateLong = (iso: string): string => {
+    try {
+      const d = new Date(iso + "T12:00:00Z");
+      return d.toLocaleDateString("de-DE", {
+        weekday: "long",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        timeZone: "Europe/Berlin",
+      });
+    } catch { return iso; }
+  };
+  const formatGermanDateShort = (iso: string): string => {
+    try {
+      const d = new Date(iso + "T12:00:00Z");
+      return d.toLocaleDateString("de-DE", {
+        weekday: "short",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        timeZone: "Europe/Berlin",
+      });
+    } catch { return iso; }
+  };
+
+  const [viewDate, setViewDate] = useState<string>(todayISO());
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [tomorrowTasks, setTomorrowTasks] = useState<Task[]>([]);
   const [persons, setPersons] = useState<SimpleItem[]>([]);
   const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
   const [loading, setLoading] = useState(true);
@@ -192,31 +224,36 @@ function AdminHome() {
   const [undoTask, setUndoTask] = useState<Task | null>(null);
   const [mediaTask, setMediaTask] = useState<Task | null>(null);
   const [busyId, setBusyId] = useState<string>("");
-  const tomorrowISO = (): string => {
-    const todayBerlin = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
-    const d = new Date(todayBerlin + "T00:00:00Z");
-    d.setUTCDate(d.getUTCDate() + 1);
-    return d.toISOString().slice(0, 10);
-  };
+  const dateInputRef = useRef<HTMLInputElement | null>(null);
+
+  const today = todayISO();
+  const isToday = viewDate === today;
+  const isYesterday = viewDate === addDaysISO(today, -1);
+  const isTomorrow = viewDate === addDaysISO(today, 1);
 
   useEffect(() => { const u = subscribeServerConfig((c) => setOnline(!!c)); return () => { u(); }; }, []);
   const load = async () => {
     try {
-      const [t, p, wfMap, tmw] = await Promise.all([
-        api<Task[]>("/tasks/today"),
+      const [t, p, wfMap] = await Promise.all([
+        // Use the new generic `/tasks?date=YYYY-MM-DD` endpoint with fallback
+        api<Task[]>(`/tasks?date=${viewDate}`).catch(() =>
+          api<Task[]>(`/tasks/by-date?date=${viewDate}`).catch(() => [])
+        ),
         api<SimpleItem[]>("/persons"),
         fetchAllWorkflows(),
-        api<Task[]>(`/tasks/by-date?date=${tomorrowISO()}`).catch(() => []),
       ]);
-      setTasks(t); setPersons(p); setWorkflows(wfMap);
-      setTomorrowTasks(Array.isArray(tmw) ? tmw : []);
+      setTasks(Array.isArray(t) ? t : []);
+      setPersons(p);
+      setWorkflows(wfMap);
     } catch {} finally { setLoading(false); }
   };
   useEffect(() => {
+    setLoading(true);
     load();
     const tk = setInterval(() => setTick((x) => x + 1), 1000);
     return () => clearInterval(tk);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewDate]);
   useWebSocket((m) => {
     if (m?.type === "workflow_updated" && m.workflow?.task_id) {
       const wf = m.workflow as TaskWorkflow & { deleted?: boolean };
@@ -234,11 +271,15 @@ function AdminHome() {
   const personName = (id: string) => persons.find((p) => p.id === id)?.name || "—";
   const logout = () => { setToken(null); nav("/"); };
   const archiveAll = async () => {
+    if (!isToday) {
+      alert('Massen-Archivierung ist nur für „Heute“ verfügbar.');
+      return;
+    }
     if (!confirm("Alle heutigen Aufgaben archivieren?")) return;
     try { await api("/tasks/archive-now", { method: "POST", auth: true }); load(); } catch (e: any) { alert("Fehler: " + (e?.message || "")); }
   };
   const archiveOne = async (id: string) => {
-    if (!confirm("Aufgabe archivieren? Sie wird aus der heutigen Liste entfernt.")) return;
+    if (!confirm("Aufgabe archivieren? Sie wird aus der Tagesliste entfernt.")) return;
     try { await api(`/tasks/${id}`, { method: "DELETE", auth: true }); load(); } catch {}
   };
   const deleteOne = async (id: string) => {
@@ -246,13 +287,25 @@ function AdminHome() {
     try { await api(`/tasks/${id}?permanent=1`, { method: "DELETE", auth: true }); load(); } catch {}
   };
   const editOne = (id: string) => nav(`/admin/edit/${id}`);
+  const goCreate = () => nav(`/admin/create${viewDate !== today ? `?date=${viewDate}` : ""}`);
+  const openDatePicker = () => {
+    const el = dateInputRef.current;
+    if (!el) return;
+    // Modern browsers: showPicker(); fallback: focus+click
+    try { (el as any).showPicker?.(); el.focus(); el.click(); } catch { el.click(); }
+  };
   void tick;
 
   return (
     <div className={`admin-scope ${darkScope ? "dark" : "light"}`} style={{ ["--admin-bg" as any]: bgColor }}>
     <div className="min-h-full flex flex-col">
       <div className="flex items-center justify-between p-5">
-        <div className="min-w-0 flex-1 mr-3"><div className="text-2xl font-black tracking-widest uppercase truncate">{adminName}</div><div className="text-xs tracking-wider opacity-60">{tab === "heute" ? `Aufgaben heute · ${tasks.length}` : `Für morgen geplant · ${tomorrowTasks.length}`}</div></div>
+        <div className="min-w-0 flex-1 mr-3">
+          <div className="text-2xl font-black tracking-widest uppercase truncate">{adminName}</div>
+          <div className="text-xs tracking-wider opacity-60">
+            Plan für: <span className="font-bold opacity-90">{formatGermanDateLong(viewDate)}</span> · {tasks.length} {tasks.length === 1 ? "Aufgabe" : "Aufgaben"}
+          </div>
+        </div>
         <button onClick={logout} className="p-2"><Icon d={ICONS.logout} size={22} color={darkScope ? "#fff" : "#000"} /></button>
       </div>
       <div className={`mx-4 mb-3 flex items-center gap-2 px-3 py-2 rounded-full border bg-surface-card ${online ? "border-brand-green" : "border-brand-orange"}`}>
@@ -260,42 +313,93 @@ function AdminHome() {
         <span className="flex-1 text-xs font-bold">{online ? "Online · Live-Updates aktiv" : "Offline-Modus · Lokale Daten"}</span>
         <button onClick={() => nav("/admin/server")} className="border border-surface-border px-2.5 py-1 rounded-md text-xs font-bold">Server</button>
       </div>
-      {/* Date-range tabs: Heute · Morgen · Archiv */}
-      <div className="flex gap-2 px-3 pb-2">
+
+      {/* Date navigation: ◀ [date label / picker] ▶ */}
+      <div className="flex items-center gap-2 px-3 pb-2">
         <button
-          onClick={() => setTab("heute")}
-          className={`flex-1 py-2.5 rounded-lg border-2 font-black text-xs tracking-[2px] transition ${tab === "heute" ? "bg-brand-blue/20 border-brand-blue text-brand-blue" : "bg-surface-card border-surface-border opacity-70"}`}
+          onClick={() => setViewDate(addDaysISO(viewDate, -1))}
+          className="w-11 h-11 rounded-lg border border-surface-border bg-surface-card text-lg font-black active:scale-90 flex items-center justify-center"
+          aria-label="Vorheriger Tag"
         >
-          HEUTE · {tasks.length}
+          ◀
         </button>
         <button
-          onClick={() => setTab("morgen")}
-          className={`flex-1 py-2.5 rounded-lg border-2 font-black text-xs tracking-[2px] transition ${tab === "morgen" ? "border-indigo-500 text-indigo-500" : "bg-surface-card border-surface-border opacity-70"}`}
-          style={tab === "morgen" ? { backgroundColor: EVENT_COLOR.feierabend + "20", borderColor: EVENT_COLOR.feierabend, color: EVENT_COLOR.feierabend } : undefined}
+          onClick={openDatePicker}
+          className={`flex-1 h-11 rounded-lg border-2 font-black tracking-wide flex items-center justify-center gap-2 active:scale-95 transition ${isToday ? "border-brand-blue bg-brand-blue/15 text-brand-blue" : "border-surface-border bg-surface-card"}`}
         >
-          MORGEN · {tomorrowTasks.length}
+          <span className="text-sm">{formatGermanDateShort(viewDate)}</span>
+          <span className="opacity-70 text-base">📅</span>
+        </button>
+        <button
+          onClick={() => setViewDate(addDaysISO(viewDate, 1))}
+          className="w-11 h-11 rounded-lg border border-surface-border bg-surface-card text-lg font-black active:scale-90 flex items-center justify-center"
+          aria-label="Nächster Tag"
+        >
+          ▶
+        </button>
+        {/* Hidden native date input — clicked programmatically by the date label button */}
+        <input
+          ref={dateInputRef}
+          type="date"
+          value={viewDate}
+          onChange={(e) => { if (e.target.value) setViewDate(e.target.value); }}
+          style={{ position: "absolute", opacity: 0, pointerEvents: "none", width: 1, height: 1 }}
+          aria-hidden="true"
+        />
+      </div>
+
+      {/* Quick shortcuts: Gestern · Heute · Morgen · Archiv */}
+      <div className="flex gap-2 px-3 pb-2">
+        <button
+          onClick={() => setViewDate(addDaysISO(today, -1))}
+          className={`flex-1 py-2.5 rounded-lg border-2 font-black text-[11px] tracking-[1.5px] transition ${isYesterday ? "bg-brand-blue/20 border-brand-blue text-brand-blue" : "bg-surface-card border-surface-border opacity-70"}`}
+        >
+          GESTERN
+        </button>
+        <button
+          onClick={() => setViewDate(today)}
+          className={`flex-1 py-2.5 rounded-lg border-2 font-black text-[11px] tracking-[1.5px] transition ${isToday ? "bg-brand-blue/20 border-brand-blue text-brand-blue" : "bg-surface-card border-surface-border opacity-70"}`}
+        >
+          HEUTE
+        </button>
+        <button
+          onClick={() => setViewDate(addDaysISO(today, 1))}
+          className={`flex-1 py-2.5 rounded-lg border-2 font-black text-[11px] tracking-[1.5px] transition ${isTomorrow ? "border-indigo-500 text-indigo-500" : "bg-surface-card border-surface-border opacity-70"}`}
+          style={isTomorrow ? { backgroundColor: EVENT_COLOR.feierabend + "20", borderColor: EVENT_COLOR.feierabend, color: EVENT_COLOR.feierabend } : undefined}
+        >
+          MORGEN
         </button>
         <button
           onClick={() => nav("/admin/archive")}
-          className="flex-1 py-2.5 rounded-lg border-2 font-black text-xs tracking-[2px] bg-surface-card border-surface-border opacity-70 hover:opacity-100"
+          className="flex-1 py-2.5 rounded-lg border-2 font-black text-[11px] tracking-[1.5px] bg-surface-card border-surface-border opacity-70 hover:opacity-100"
         >
           ARCHIV
         </button>
       </div>
+
       <div className="flex gap-2 px-3 pb-3 border-b border-surface-border">
-        <ToolBtn onClick={() => nav("/admin/create")} icon={ICONS.plus} label="Neu" primary />
+        <ToolBtn onClick={goCreate} icon={ICONS.plus} label="Neu" primary />
         <ToolBtn onClick={() => nav("/admin/manage")} icon={ICONS.list} label="Listen" />
         <ToolBtn onClick={() => nav("/admin/settings")} icon={ICONS.settings} label="Einstell." />
       </div>
       <div className="flex-1 p-4 space-y-3">
         {(() => {
-          const activeTasks = tab === "heute" ? tasks : tomorrowTasks;
+          const activeTasks = tasks;
           if (loading) return <div className="flex justify-center mt-12"><Spin /></div>;
           if (activeTasks.length === 0) return (
             <div className="mt-16 text-center opacity-60 space-y-2">
               <div className="flex justify-center"><Icon d={ICONS.clipboard} size={48} /></div>
-              <div className="text-lg font-bold">{tab === "heute" ? "Keine Aufgaben heute" : "Keine Aufgaben für morgen"}</div>
-              <div className="text-sm">{tab === "heute" ? "Tippen Sie auf NEU, um eine Aufgabe hinzuzufügen." : "Hier erscheinen Aufgaben, die durch Feierabend verschoben wurden."}</div>
+              <div className="text-lg font-bold">
+                {isToday ? "Keine Aufgaben heute" :
+                 isYesterday ? "Keine Aufgaben gestern" :
+                 isTomorrow ? "Keine Aufgaben für morgen" :
+                 `Keine Aufgaben am ${formatGermanDateShort(viewDate)}`}
+              </div>
+              <div className="text-sm">
+                {isToday || isTomorrow || (viewDate > today)
+                  ? "Tippen Sie auf NEU, um eine Aufgabe für diesen Tag hinzuzufügen."
+                  : "Für diesen Tag wurden keine Aufgaben erfasst."}
+              </div>
             </div>
           );
           return activeTasks.map((t) => {
@@ -408,7 +512,7 @@ function AdminHome() {
         });
         })()}
       </div>
-      {tab === "heute" && tasks.length > 0 && (
+      {isToday && tasks.length > 0 && (
         <button onClick={archiveAll} className="m-4 mt-0 bg-brand-yellow text-black font-black tracking-[2px] h-14 flex items-center justify-center gap-2 rounded-xl">
           <Icon d={ICONS.archive} size={18} color="#000" /> HEUTE JETZT ARCHIVIEREN
         </button>
@@ -756,17 +860,47 @@ function DailyBreakdownView({ wf, persons, dark = true }: { wf: TaskWorkflow; pe
 function AdminCreate() {
   const nav = useNavigate();
   const params = useParams();
+  const [searchParams] = useSearchParams();
   const editId = params.id || null;
   const isEdit = !!editId;
+
+  // ---- Date helpers (Berlin TZ) ----
+  const todayISO = (): string => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
+  const addDaysISO = (iso: string, n: number): string => {
+    const d = new Date(iso + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const formatDateLabel = (iso: string): string => {
+    try {
+      const d = new Date(iso + "T12:00:00Z");
+      return d.toLocaleDateString("de-DE", {
+        weekday: "long", day: "2-digit", month: "2-digit", year: "numeric",
+        timeZone: "Europe/Berlin",
+      });
+    } catch { return iso; }
+  };
+
   const [tt, setTt] = useState<SimpleItem[]>([]); const [hs, setHs] = useState<SimpleItem[]>([]);
   const [st, setSt] = useState<SimpleItem[]>([]); const [pp, setPp] = useState<SimpleItem[]>([]);
   const [taskType, setTaskType] = useState(""); const [haus, setHaus] = useState(""); const [station, setStation] = useState("");
   const [desc, setDesc] = useState(""); const [pids, setPids] = useState<string[]>([]);
   const [tFrom, setTFrom] = useState("07:00"); const [tTo, setTTo] = useState("15:30");
+  // Pre-fill Datum from URL ?date= (when admin clicked "Neu" while viewing a non-today day)
+  const initialDate = (() => {
+    const q = searchParams.get("date");
+    return q && /^\d{4}-\d{2}-\d{2}$/.test(q) ? q : todayISO();
+  })();
+  const [taskDate, setTaskDate] = useState<string>(initialDate);
   const [saving, setSaving] = useState(false);
   const [addFor, setAddFor] = useState<null | { kind: string; label: string }>(null);
   const [newName, setNewName] = useState("");
   const [loadError, setLoadError] = useState<string>("");
+
+  const today = todayISO();
+  const isToday = taskDate === today;
+  const isTomorrow = taskDate === addDaysISO(today, 1);
+  const isNextWeek = taskDate === addDaysISO(today, 7);
 
   const load = async () => {
     const [a, b, c, d] = await Promise.all([
@@ -788,10 +922,20 @@ function AdminCreate() {
             if (found) { task = found; break; }
           }
         }
+        if (!task) {
+          // Fallback: search in any non-archived list (covers future-dated tasks)
+          try {
+            const all = await api<Task[]>("/tasks");
+            task = (all || []).find((t) => t.id === editId);
+          } catch {}
+        }
         if (task) {
           setTaskType(task.task_type); setHaus(task.haus); setStation(task.station);
           setDesc(task.description || ""); setPids(task.person_ids || []);
           setTFrom(task.time_from || "07:00"); setTTo(task.time_to || "15:30");
+          if (task.task_date && /^\d{4}-\d{2}-\d{2}$/.test(task.task_date)) {
+            setTaskDate(task.task_date);
+          }
         } else {
           setLoadError("Aufgabe nicht gefunden");
         }
@@ -815,9 +959,14 @@ function AdminCreate() {
   };
   const submit = async () => {
     if (!taskType || !haus || !station || !tFrom || !tTo) { alert("Bitte alle Pflichtfelder ausfüllen"); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(taskDate)) { alert("Ungültiges Datum"); return; }
     setSaving(true);
     try {
-      const body = { task_type: taskType, haus, station, description: desc, person_ids: pids, time_from: tFrom, time_to: tTo };
+      const body = {
+        task_type: taskType, haus, station, description: desc, person_ids: pids,
+        time_from: tFrom, time_to: tTo,
+        task_date: taskDate,
+      };
       if (isEdit && editId) {
         await api(`/tasks/${editId}`, { method: "PUT", auth: true, body });
       } else {
@@ -863,6 +1012,48 @@ function AdminCreate() {
             <button type="button" onClick={() => setAddFor({ kind: "persons", label: "Person" })} className="chip-add"><Icon d={ICONS.plus} size={14} color="#FFD600" /> Add</button>
           </div>
         </div>
+
+        {/* ---- Datum (date picker + quick shortcuts) ---- */}
+        <div className="mb-5">
+          <label className="section-label">Datum</label>
+          <div className="mt-2 space-y-2">
+            <input
+              type="date"
+              value={taskDate}
+              onChange={(e) => e.target.value && setTaskDate(e.target.value)}
+              className="input-base"
+            />
+            <div className="text-xs opacity-70 px-1">
+              {formatDateLabel(taskDate)}
+              {taskDate < today && <span className="ml-2 text-brand-orange font-bold">· Vergangenheit</span>}
+              {taskDate > today && <span className="ml-2 text-brand-blue font-bold">· in der Zukunft</span>}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setTaskDate(today)}
+                className={`px-3 py-1.5 rounded-md border-2 text-xs font-black tracking-wide transition ${isToday ? "border-brand-blue bg-brand-blue/15 text-brand-blue" : "border-surface-border bg-surface-card opacity-70"}`}
+              >
+                Heute
+              </button>
+              <button
+                type="button"
+                onClick={() => setTaskDate(addDaysISO(today, 1))}
+                className={`px-3 py-1.5 rounded-md border-2 text-xs font-black tracking-wide transition ${isTomorrow ? "border-indigo-500 bg-indigo-500/15 text-indigo-400" : "border-surface-border bg-surface-card opacity-70"}`}
+              >
+                Morgen
+              </button>
+              <button
+                type="button"
+                onClick={() => setTaskDate(addDaysISO(today, 7))}
+                className={`px-3 py-1.5 rounded-md border-2 text-xs font-black tracking-wide transition ${isNextWeek ? "border-purple-500 bg-purple-500/15 text-purple-400" : "border-surface-border bg-surface-card opacity-70"}`}
+              >
+                Nächste Woche
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div className="flex gap-3">
           <div className="flex-1"><label className="section-label">Von</label><input type="time" value={tFrom} onChange={(e) => setTFrom(e.target.value)} className="input-base mt-2" /></div>
           <div className="flex-1"><label className="section-label">Bis</label><input type="time" value={tTo} onChange={(e) => setTTo(e.target.value)} className="input-base mt-2" /></div>
