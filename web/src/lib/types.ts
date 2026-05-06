@@ -36,6 +36,8 @@ export interface Task {
   archived: boolean;
   archive_date?: string | null;
   task_date: string;
+  continue_tomorrow?: boolean;
+  next_work_date?: string | null;
   photos?: TaskPhoto[];
 }
 

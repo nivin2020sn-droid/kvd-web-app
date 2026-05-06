@@ -97,6 +97,13 @@ const TaskSchema = new mongoose.Schema({
   archived: { type: Boolean, default: false },
   archive_date: { type: String, default: null },
   task_date: { type: String, default: () => new Date().toISOString().slice(0, 10) },
+  // Feierabend continuation — set by `feierabend` event. `task_date` NEVER
+  // changes on Feierabend (the original planned day stays intact); instead we
+  // note that this task should ALSO appear on `next_work_date`, labelled
+  // "Fortsetzung von gestern". When the worker clicks Fortsetzen on that day
+  // we clear both flags.
+  continue_tomorrow: { type: Boolean, default: false },
+  next_work_date: { type: String, default: null },
   // Photos attached to this task. Binary assets live in Cloudinary; MongoDB
   // stores metadata + URLs only.
   photos: {
@@ -242,25 +249,43 @@ for (const kind of Object.keys(KIND_MODEL)) mountKind(kind);
 // Tasks
 router.get('/tasks/today', async (req, res) => {
   const today = todayStr();
-  // Use $ne:true so tasks where `archived` is null/undefined (legacy data) still match.
-  res.json(await TaskModel.find({ archived: { $ne: true }, task_date: today }, { _id: 0 }).lean());
+  // Match: (task_date==today) OR (continuation from yesterday: continue_tomorrow && next_work_date==today)
+  res.json(await TaskModel.find({
+    archived: { $ne: true },
+    $or: [
+      { task_date: today },
+      { continue_tomorrow: true, next_work_date: today },
+    ],
+  }, { _id: 0 }).lean());
 });
 
-// Generic: GET /tasks/by-date?date=YYYY-MM-DD (used by Admin Heute/Morgen tabs + by Tablet "Für morgen" panel)
+// Generic: GET /tasks/by-date?date=YYYY-MM-DD
 router.get('/tasks/by-date', async (req, res) => {
   const date = String(req.query.date || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: 'date muss YYYY-MM-DD sein' });
-  res.json(await TaskModel.find({ archived: { $ne: true }, task_date: date }, { _id: 0 }).lean());
+  res.json(await TaskModel.find({
+    archived: { $ne: true },
+    $or: [
+      { task_date: date },
+      { continue_tomorrow: true, next_work_date: date },
+    ],
+  }, { _id: 0 }).lean());
 });
 
 // Alias matching the spec the user asked for: GET /api/tasks?date=YYYY-MM-DD
 //   - Without ?date → returns all non-archived tasks (across every date) ordered by date
-//   - With ?date    → identical to /tasks/by-date
+//   - With ?date    → matches task_date OR continuation (next_work_date)
 router.get('/tasks', async (req, res) => {
   const date = String(req.query.date || '').trim();
   if (date) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: 'date muss YYYY-MM-DD sein' });
-    return res.json(await TaskModel.find({ archived: { $ne: true }, task_date: date }, { _id: 0 }).lean());
+    return res.json(await TaskModel.find({
+      archived: { $ne: true },
+      $or: [
+        { task_date: date },
+        { continue_tomorrow: true, next_work_date: date },
+      ],
+    }, { _id: 0 }).lean());
   }
   res.json(await TaskModel.find({ archived: { $ne: true } }, { _id: 0 }).sort({ task_date: -1 }).lean());
 });
@@ -921,10 +946,24 @@ router.post('/workflows/:task_id/event', async (req, res) => {
     { $set: updated },
     { upsert: true, new: true },
   );
-  // On Feierabend: advance task_date to the next day so the task shows up tomorrow
+  // On Feierabend: DO NOT change task_date. Instead mark the task to continue
+  // tomorrow — it will appear on tomorrow's day view as "Fortsetzung von gestern"
+  // (via the $or query), and also remain visible under its original task_date.
   if (type === 'feierabend' && taskDoc) {
-    const newDate = tomorrowStr(taskDoc.task_date || todayStr());
-    await TaskModel.updateOne({ id: req.params.task_id }, { $set: { task_date: newDate } });
+    const nextDay = tomorrowStr(todayStr());
+    await TaskModel.updateOne(
+      { id: req.params.task_id },
+      { $set: { continue_tomorrow: true, next_work_date: nextDay } },
+    );
+    broadcast({ type: 'tasks_updated' });
+  }
+  // On Fortsetzen: if the task was marked to continue tomorrow, clear the flags
+  // (the continuation has now happened, so it no longer needs to show on future days).
+  if (type === 'fortsetzen' && taskDoc?.continue_tomorrow) {
+    await TaskModel.updateOne(
+      { id: req.params.task_id },
+      { $set: { continue_tomorrow: false, next_work_date: null } },
+    );
     broadcast({ type: 'tasks_updated' });
   }
   broadcast({ type: 'workflow_updated', workflow: updated });

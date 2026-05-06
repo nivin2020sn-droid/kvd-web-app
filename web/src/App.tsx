@@ -58,7 +58,6 @@ export default function App() {
       <Route path="/admin/create" element={<AdminCreate />} />
       <Route path="/admin/edit/:id" element={<AdminCreate />} />
       <Route path="/admin/manage" element={<AdminManage />} />
-      <Route path="/admin/archive" element={<AdminArchive />} />
       <Route path="/admin/settings" element={<AdminSettings />} />
       <Route path="/admin/server" element={<AdminServer />} />
       <Route path="/tablet" element={<Tablet />} />
@@ -476,12 +475,6 @@ function AdminHome() {
         >
           MORGEN
         </button>
-        <button
-          onClick={() => nav("/admin/archive")}
-          className="flex-1 py-2.5 rounded-lg border-2 font-black text-[11px] tracking-[1.5px] bg-surface-card border-surface-border opacity-70 hover:opacity-100"
-        >
-          ARCHIV
-        </button>
       </div>
 
       <div className="flex gap-2 px-3 pb-3 border-b border-surface-border">
@@ -517,6 +510,9 @@ function AdminHome() {
           const lastEventColor = wf.last_event_type ? EVENT_COLOR[wf.last_event_type] : "#9CA3AF";
           const isExpanded = expandedId === t.id;
           const personsLabel = t.person_ids.map(personName).join(" · ") || "Keine Personen";
+          // "Fortsetzung von gestern" if continue_tomorrow flag is set AND we're
+          // viewing the next_work_date (i.e. this card is showing on a continuation day)
+          const isContinuation = !!t.continue_tomorrow && t.next_work_date === viewDate && t.task_date !== viewDate;
           return (
             <div key={t.id} className="bg-surface-card border border-surface-border rounded-xl overflow-hidden">
               {/* Compact header — always visible, clickable to toggle expand */}
@@ -532,11 +528,16 @@ function AdminHome() {
                       {t.task_type} <span className="opacity-50">·</span> Haus {t.haus}
                     </div>
                     <div className="text-xs opacity-60 truncate">{personsLabel}</div>
-                    <div className="flex items-center gap-1.5 pt-0.5">
+                    <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
                       <span className="text-[11px] font-black tracking-wide" style={{ color: STATUS_COLOR[wfStatus] }}>
                         {STATUS_LABEL_DE[wfStatus]}
                       </span>
+                      {isContinuation && (
+                        <span className="text-[10px] font-black tracking-wide px-1.5 py-0.5 rounded" style={{ backgroundColor: EVENT_COLOR.feierabend + "25", color: EVENT_COLOR.feierabend }}>
+                          ↻ Fortsetzung von gestern
+                        </span>
+                      )}
                       {isRunning && (
                         <span className="ml-auto text-[10px] font-mono tabular-nums opacity-60">
                           {formatDuration(totalMs)}
@@ -595,16 +596,13 @@ function AdminHome() {
               {/* Vollständiger Verlauf aller Ereignisse (pro Tag gruppiert falls mehrtägig) */}
               <DailyBreakdownView wf={wf} persons={persons} dark={true} />
 
-              {/* Actions: Bearbeiten | Drucken | Archivieren | Löschen */}
-              <div className="grid grid-cols-2 gap-2 mt-1">
+              {/* Actions: Bearbeiten | Drucken | Löschen */}
+              <div className="grid grid-cols-3 gap-2 mt-1">
                 <button onClick={() => editOne(t.id)} className="h-10 rounded-lg border border-brand-yellow/60 bg-brand-yellow/10 text-brand-yellow text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
                   <Icon d={ICONS.edit} size={14} color="#FFD600" /> Bearbeiten
                 </button>
                 <button onClick={() => printTaskReport(t, wf, persons)} className="h-10 rounded-lg border border-brand-blue/60 bg-blue-500/10 text-brand-blue text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
                   <Icon d={ICONS.print} size={14} color="#3B82F6" /> Drucken
-                </button>
-                <button onClick={() => setArchiveConfirm({ task: t, wf })} className="h-10 rounded-lg border border-brand-orange/60 bg-orange-500/10 text-brand-orange text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
-                  <Icon d={ICONS.archive} size={14} color="#FF9500" /> Archivieren
                 </button>
                 <button onClick={() => deleteOne(t.id)} className="h-10 rounded-lg border border-brand-red/60 bg-red-500/10 text-brand-red text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
                   <Icon d={ICONS.trash} size={14} color="#FF3B30" /> Löschen
@@ -653,11 +651,8 @@ function AdminHome() {
         });
         })()}
       </div>
-      {isToday && tasks.length > 0 && (
-        <button onClick={archiveAll} className="m-4 mt-0 bg-brand-yellow text-black font-black tracking-[2px] h-14 flex items-center justify-center gap-2 rounded-xl">
-          <Icon d={ICONS.archive} size={18} color="#000" /> HEUTE JETZT ARCHIVIEREN
-        </button>
-      )}
+      {/* Massen-Archivieren-Button entfernt — kein Archiv-System mehr.
+          Tage selbst dienen als Archiv. */}
     </div>
     {timeEditTask && (
       <TimeEditModal
@@ -699,18 +694,7 @@ function AdminHome() {
         onPhotosChanged={() => load()}
       />
     )}
-    {archiveConfirm && (
-      <ArchiveConfirmModal
-        task={archiveConfirm.task}
-        wf={archiveConfirm.wf}
-        onCancel={() => setArchiveConfirm(null)}
-        onConfirm={async () => {
-          const id = archiveConfirm.task.id;
-          setArchiveConfirm(null);
-          await archiveOne(id);
-        }}
-      />
-    )}
+    {archiveConfirm /* defensive: archive system removed; keep state harmless */ && null}
     </div>
   );
 }
@@ -1846,6 +1830,42 @@ function Tablet() {
   // Safe for Mitarbeiter: never touches workflow/timer/status/DB.
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const toggleExpand = (id: string) => setExpandedId((prev) => (prev === id ? null : id));
+  // ---- Date navigation (same as Chef): Heute / Gestern / Morgen / Date Picker ----
+  const todayISO = (): string => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
+  const addDaysISO = (iso: string, n: number): string => {
+    const d = new Date(iso + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const formatGermanDateLong = (iso: string): string => {
+    try {
+      const d = new Date(iso + "T12:00:00Z");
+      return d.toLocaleDateString("de-DE", {
+        weekday: "long", day: "2-digit", month: "2-digit", year: "numeric",
+        timeZone: "Europe/Berlin",
+      });
+    } catch { return iso; }
+  };
+  const formatGermanDateShort = (iso: string): string => {
+    try {
+      const d = new Date(iso + "T12:00:00Z");
+      return d.toLocaleDateString("de-DE", {
+        weekday: "short", day: "2-digit", month: "2-digit", year: "numeric",
+        timeZone: "Europe/Berlin",
+      });
+    } catch { return iso; }
+  };
+  const [viewDate, setViewDate] = useState<string>(todayISO());
+  const dateInputRef = useRef<HTMLInputElement | null>(null);
+  const todayValue = todayISO();
+  const isViewToday = viewDate === todayValue;
+  const isViewYesterday = viewDate === addDaysISO(todayValue, -1);
+  const isViewTomorrow = viewDate === addDaysISO(todayValue, 1);
+  const openDatePicker = () => {
+    const el = dateInputRef.current;
+    if (!el) return;
+    try { (el as any).showPicker?.(); el.focus(); el.click(); } catch { el.click(); }
+  };
   // Install offline upload sync on mount
   useEffect(() => { const stop = installOfflineSync(() => load()); return stop; /* eslint-disable-next-line */ }, []);
   // Toast for user feedback on non-destructive workflow actions (Feierabend)
@@ -1866,23 +1886,32 @@ function Tablet() {
   const load = async () => {
     try {
       const [t, p, st, wfMap, tmw] = await Promise.all([
-        api<Task[]>("/tasks/today"),
+        // Tablet (Mitarbeiter): fetch by selected date — defaults to today.
+        api<Task[]>(`/tasks?date=${viewDate}`).catch(() =>
+          api<Task[]>(`/tasks/by-date?date=${viewDate}`).catch(() => [])
+        ),
         api<SimpleItem[]>("/persons"),
         api<AppSettings>("/settings"),
         fetchAllWorkflows(),
-        api<Task[]>(`/tasks/by-date?date=${tomorrowISO()}`).catch(() => []),
+        // Tomorrow panel (only relevant when viewing today)
+        viewDate === todayValue
+          ? api<Task[]>(`/tasks/by-date?date=${tomorrowISO()}`).catch(() => [])
+          : Promise.resolve([]),
       ]);
-      setTasks(t); setPersons(p); setS(st);
+      setTasks(Array.isArray(t) ? t : []);
+      setPersons(p); setS(st);
       setWorkflows(wfMap);
       setTomorrowTasks(Array.isArray(tmw) ? tmw : []);
     } catch {} finally { setLoading(false); }
   };
   useEffect(() => {
+    setLoading(true);
     load();
     const it = setInterval(() => setNow(new Date()), 30000);
     const tk = setInterval(() => setTick((x) => x + 1), 1000); // live timer
     return () => { clearInterval(it); clearInterval(tk); };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewDate]);
   useWebSocket((m) => {
     if (m?.type === "workflow_updated" && m.workflow?.task_id) {
       const wf = m.workflow as TaskWorkflow & { deleted?: boolean };
@@ -1968,18 +1997,85 @@ function Tablet() {
             <button onClick={() => nav("/")} className="p-2"><Icon d={ICONS.exit} size={22} color={textMuted} /></button>
           </div>
           <div className="flex items-baseline flex-wrap gap-5">
-            <div className="text-3xl font-black tracking-[3px]" style={{ color: dark ? "#fff" : "#000" }}>PLAN HEUTE</div>
-            <div style={{ color: textMuted }}>{dateStr}</div>
+            <div className="text-3xl font-black tracking-[3px]" style={{ color: dark ? "#fff" : "#000" }}>
+              {isViewToday ? "PLAN HEUTE" : isViewYesterday ? "PLAN GESTERN" : isViewTomorrow ? "PLAN MORGEN" : "PLAN"}
+            </div>
+            <div style={{ color: textMuted }}>{formatGermanDateLong(viewDate)}</div>
             {!online && <div className="flex items-center gap-1.5 border border-brand-orange bg-orange-500/15 rounded-full px-2.5 py-1"><span className="w-1.5 h-1.5 rounded-full bg-brand-orange" /><span className="text-brand-orange text-xs font-bold">Offline Modus</span></div>}
             <div className="ml-auto" style={{ color: textMuted }}>{timeStr}</div>
+          </div>
+        </div>
+        {/* ===== Date navigation row (Mitarbeiter sees all days) ===== */}
+        <div className="px-4 pb-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setViewDate(addDaysISO(viewDate, -1))}
+              className="w-12 h-12 rounded-xl border text-lg font-black active:scale-90 flex items-center justify-center"
+              style={{ borderColor: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)", backgroundColor: dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", color: dark ? "#fff" : "#000" }}
+              aria-label="Vorheriger Tag"
+            >◀</button>
+            <button
+              onClick={openDatePicker}
+              className="flex-1 h-12 rounded-xl border-2 font-black flex items-center justify-center gap-2 active:scale-95 transition"
+              style={isViewToday
+                ? { borderColor: "#3B82F6", backgroundColor: "#3B82F622", color: "#3B82F6" }
+                : { borderColor: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)", backgroundColor: dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", color: dark ? "#fff" : "#000" }}
+            >
+              <span className="text-sm">{formatGermanDateShort(viewDate)}</span>
+              <span className="opacity-70 text-base">📅</span>
+            </button>
+            <button
+              onClick={() => setViewDate(addDaysISO(viewDate, 1))}
+              className="w-12 h-12 rounded-xl border text-lg font-black active:scale-90 flex items-center justify-center"
+              style={{ borderColor: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)", backgroundColor: dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", color: dark ? "#fff" : "#000" }}
+              aria-label="Nächster Tag"
+            >▶</button>
+            <input
+              ref={dateInputRef}
+              type="date"
+              value={viewDate}
+              onChange={(e) => { if (e.target.value) setViewDate(e.target.value); }}
+              style={{ position: "absolute", opacity: 0, pointerEvents: "none", width: 1, height: 1 }}
+              aria-hidden="true"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setViewDate(addDaysISO(todayValue, -1))}
+              className="flex-1 py-2 rounded-lg border-2 font-black text-[11px] tracking-[1.5px] transition"
+              style={isViewYesterday
+                ? { borderColor: "#3B82F6", backgroundColor: "#3B82F622", color: "#3B82F6" }
+                : { borderColor: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)", backgroundColor: dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", color: textMuted }}
+            >GESTERN</button>
+            <button
+              onClick={() => setViewDate(todayValue)}
+              className="flex-1 py-2 rounded-lg border-2 font-black text-[11px] tracking-[1.5px] transition"
+              style={isViewToday
+                ? { borderColor: "#3B82F6", backgroundColor: "#3B82F622", color: "#3B82F6" }
+                : { borderColor: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)", backgroundColor: dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", color: textMuted }}
+            >HEUTE</button>
+            <button
+              onClick={() => setViewDate(addDaysISO(todayValue, 1))}
+              className="flex-1 py-2 rounded-lg border-2 font-black text-[11px] tracking-[1.5px] transition"
+              style={isViewTomorrow
+                ? { borderColor: EVENT_COLOR.feierabend, backgroundColor: EVENT_COLOR.feierabend + "22", color: EVENT_COLOR.feierabend }
+                : { borderColor: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)", backgroundColor: dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", color: textMuted }}
+            >MORGEN</button>
           </div>
         </div>
         <div className="p-4 space-y-3.5 pb-10">
           {loading ? <div className="flex justify-center mt-12"><Spin /></div> : tasks.length === 0 ? (
             <div className="border-2 border-dashed rounded-2xl p-12 text-center space-y-3" style={{ borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)", backgroundColor: "rgba(15,15,18,0.88)" }}>
               <div className="flex justify-center"><Icon d={ICONS.clipboard} size={56} color={textMuted} /></div>
-              <div className="text-xl font-bold" style={{ color: dark ? "#fff" : "#000" }}>Keine Aufgaben heute</div>
-              <div style={{ color: textMuted }}>Warten auf neue Aufgaben vom Admin</div>
+              <div className="text-xl font-bold" style={{ color: dark ? "#fff" : "#000" }}>
+                {isViewToday ? "Keine Aufgaben heute" :
+                 isViewYesterday ? "Keine Aufgaben gestern" :
+                 isViewTomorrow ? "Keine Aufgaben für morgen" :
+                 `Keine Aufgaben am ${formatGermanDateShort(viewDate)}`}
+              </div>
+              <div style={{ color: textMuted }}>
+                {isViewToday ? "Warten auf neue Aufgaben vom Chef" : "Für diesen Tag wurden keine Aufgaben erfasst"}
+              </div>
             </div>
           ) : tasks.map((t) => {
             const wf = workflows[t.id] || getWorkflow(t.id);
@@ -1992,6 +2088,7 @@ function Tablet() {
             const lastEventColor = wf.last_event_type ? EVENT_COLOR[wf.last_event_type] : "#9CA3AF";
             const isExpanded = expandedId === t.id;
             const personsLabel = t.person_ids.map(pn).join(" · ") || "Keine Personen";
+            const isContinuation = !!t.continue_tomorrow && t.next_work_date === viewDate && t.task_date !== viewDate;
             return (
               <div key={t.id} className="border rounded-2xl shadow-lg overflow-hidden" style={{ backgroundColor: dark ? "rgba(15,15,18,0.88)" : "rgba(255,255,255,0.92)", borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)", color: dark ? "#fff" : "#000", maxWidth: "100%" }}>
                 {/* Compact header — tap to expand/collapse. Pure visual, no workflow mutation. */}
@@ -2016,11 +2113,16 @@ function Tablet() {
                       >
                         {personsLabel}
                       </div>
-                      <div className="flex items-center gap-2 pt-0.5">
+                      <div className="flex items-center gap-2 pt-0.5 flex-wrap">
                         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
                         <span className="text-xs font-black tracking-wide" style={{ color: STATUS_COLOR[wfStatus] }}>
                           {STATUS_LABEL_DE[wfStatus]}
                         </span>
+                        {isContinuation && (
+                          <span className="text-[10px] font-black tracking-wide px-1.5 py-0.5 rounded" style={{ backgroundColor: EVENT_COLOR.feierabend + "25", color: EVENT_COLOR.feierabend }}>
+                            ↻ Fortsetzung von gestern
+                          </span>
+                        )}
                         {isRunning && (
                           <span className="ml-auto text-xs font-mono tabular-nums" style={{ color: textMuted }}>
                             {formatDuration(totalMs)}
