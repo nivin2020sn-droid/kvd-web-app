@@ -126,6 +126,28 @@ const TaskSchema = new mongoose.Schema({
 }, { versionKey: false });
 const TaskModel = mongoose.model('Task', TaskSchema, 'tasks');
 
+// =================== BESTELLUNG (Orders) ===================
+const VALID_ORDER_STATUS = new Set(['offen', 'bestellt', 'geliefert']);
+const OrderSchema = new mongoose.Schema({
+  id: { type: String, unique: true, index: true },
+  name: { type: String, required: true },
+  serial_number: { type: String, default: '' },
+  article_number: { type: String, default: '' },
+  quantity: { type: Number, default: 1 },
+  purchase_link: { type: String, default: '' },
+  note: { type: String, default: '' },
+  // Image: store the same shape as task photos (so we can reuse Cloudinary)
+  image_url: { type: String, default: '' },           // full-size
+  image_thumbnail: { type: String, default: '' },     // ~400px
+  image_public_id: { type: String, default: '' },     // for deletion
+  status: { type: String, enum: ['offen', 'bestellt', 'geliefert'], default: 'offen' },
+  archived: { type: Boolean, default: false },
+  archive_month: { type: String, default: null },     // "YYYY-MM"
+  created_at: { type: String, default: () => new Date().toISOString() },
+  updated_at: { type: String, default: () => new Date().toISOString() },
+}, { versionKey: false });
+const OrderModel = mongoose.model('Order', OrderSchema, 'orders');
+
 const SettingsSchema = new mongoose.Schema({
   _id: { type: String, default: 'singleton' },
   password: { type: String, default: DEFAULT_PASSWORD },
@@ -665,6 +687,159 @@ router.post('/tasks/:id/photos', upload.single('file'), (req, res) =>
 router.post('/upload', upload.single('file'), (req, res) => {
   const taskId = (req.query.taskId || req.body?.taskId || '').toString().trim() || undefined;
   return handleCloudinaryUpload(req, res, { taskId });
+});
+
+// =================== BESTELLUNG (Orders) ROUTES ===================
+const todayMonthStr = () => new Date().toISOString().slice(0, 7); // YYYY-MM
+
+// List orders. Filters: ?archived=true|false, ?status=offen|bestellt|geliefert,
+// ?month=YYYY-MM (only with archived=true), ?q=search-term (matches name/serial/article).
+router.get('/orders', async (req, res) => {
+  const q = {};
+  const archived = String(req.query.archived || '').toLowerCase();
+  if (archived === 'true') q.archived = true;
+  else if (archived === 'false' || archived === '') q.archived = { $ne: true };
+  const status = String(req.query.status || '').toLowerCase();
+  if (VALID_ORDER_STATUS.has(status)) q.status = status;
+  const month = String(req.query.month || '').trim();
+  if (/^\d{4}-\d{2}$/.test(month)) q.archive_month = month;
+  const search = String(req.query.q || '').trim();
+  if (search) {
+    const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    q.$or = [{ name: rx }, { serial_number: rx }, { article_number: rx }, { note: rx }];
+  }
+  const rows = await OrderModel.find(q, { _id: 0 }).sort({ created_at: -1 }).lean();
+  res.json(rows);
+});
+
+// Distinct archive months for the Archive overview.
+router.get('/orders/archive/months', async (req, res) => {
+  const rows = await OrderModel.aggregate([
+    { $match: { archived: true } },
+    { $group: { _id: '$archive_month', count: { $sum: 1 } } },
+    { $sort: { _id: -1 } },
+  ]);
+  res.json(rows.filter(r => r._id).map(r => ({ month: r._id, count: r.count })));
+});
+
+router.get('/orders/:id', async (req, res) => {
+  const o = await OrderModel.findOne({ id: req.params.id }, { _id: 0 }).lean();
+  if (!o) return res.status(404).json({ detail: 'Bestellung nicht gefunden' });
+  res.json(o);
+});
+
+router.post('/orders', requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  if (!b.name || !String(b.name).trim()) return res.status(400).json({ detail: 'Name ist Pflicht' });
+  const order = await OrderModel.create({
+    id: uuidv4(),
+    name: String(b.name).trim(),
+    serial_number: String(b.serial_number || '').trim(),
+    article_number: String(b.article_number || '').trim(),
+    quantity: Math.max(1, parseInt(b.quantity, 10) || 1),
+    purchase_link: String(b.purchase_link || '').trim(),
+    note: String(b.note || '').trim(),
+    image_url: String(b.image_url || '').trim(),
+    image_thumbnail: String(b.image_thumbnail || '').trim(),
+    image_public_id: String(b.image_public_id || '').trim(),
+    status: VALID_ORDER_STATUS.has(b.status) ? b.status : 'offen',
+  });
+  broadcast({ type: 'orders_updated' });
+  const obj = order.toObject(); delete obj._id;
+  res.json(obj);
+});
+
+router.put('/orders/:id', requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const allowed = ['name', 'serial_number', 'article_number', 'quantity', 'purchase_link',
+                   'note', 'image_url', 'image_thumbnail', 'image_public_id'];
+  const update = {};
+  for (const k of allowed) if (b[k] !== undefined) update[k] = b[k];
+  update.updated_at = new Date().toISOString();
+  const r = await OrderModel.findOneAndUpdate({ id: req.params.id }, { $set: update }, { new: true, projection: { _id: 0 } }).lean();
+  if (!r) return res.status(404).json({ detail: 'Bestellung nicht gefunden' });
+  broadcast({ type: 'orders_updated' });
+  res.json(r);
+});
+
+// Change status (Offen / Bestellt / Geliefert)
+router.patch('/orders/:id/status', requireAdmin, async (req, res) => {
+  const status = String(req.body?.status || '').toLowerCase();
+  if (!VALID_ORDER_STATUS.has(status)) return res.status(400).json({ detail: 'Ungültiger Status' });
+  const r = await OrderModel.findOneAndUpdate(
+    { id: req.params.id },
+    { $set: { status, updated_at: new Date().toISOString() } },
+    { new: true, projection: { _id: 0 } },
+  ).lean();
+  if (!r) return res.status(404).json({ detail: 'Bestellung nicht gefunden' });
+  broadcast({ type: 'orders_updated' });
+  res.json(r);
+});
+
+// Archive (monthly bucket — month is current month unless ?month=YYYY-MM is provided)
+router.post('/orders/:id/archive', requireAdmin, async (req, res) => {
+  const month = /^\d{4}-\d{2}$/.test(String(req.body?.month || '')) ? req.body.month : todayMonthStr();
+  const r = await OrderModel.findOneAndUpdate(
+    { id: req.params.id },
+    { $set: { archived: true, archive_month: month, updated_at: new Date().toISOString() } },
+    { new: true, projection: { _id: 0 } },
+  ).lean();
+  if (!r) return res.status(404).json({ detail: 'Bestellung nicht gefunden' });
+  broadcast({ type: 'orders_updated' });
+  res.json({ ok: true, order: r, archived_to_month: month });
+});
+
+// Restore from archive
+router.post('/orders/:id/restore', requireAdmin, async (req, res) => {
+  const r = await OrderModel.findOneAndUpdate(
+    { id: req.params.id },
+    { $set: { archived: false, archive_month: null, updated_at: new Date().toISOString() } },
+    { new: true, projection: { _id: 0 } },
+  ).lean();
+  if (!r) return res.status(404).json({ detail: 'Bestellung nicht gefunden' });
+  broadcast({ type: 'orders_updated' });
+  res.json({ ok: true, order: r });
+});
+
+// Permanent delete (Cloudinary cleanup if image was uploaded by us)
+router.delete('/orders/:id', requireAdmin, async (req, res) => {
+  const o = await OrderModel.findOne({ id: req.params.id }, { _id: 0 }).lean();
+  if (!o) return res.status(404).json({ detail: 'Bestellung nicht gefunden' });
+  if (o.image_public_id && CLOUDINARY_ENABLED) {
+    try { await cloudinary.uploader.destroy(o.image_public_id, { resource_type: 'image', invalidate: true }); } catch (e) { console.warn('cloudinary destroy failed:', e?.message); }
+  }
+  await OrderModel.deleteOne({ id: req.params.id });
+  broadcast({ type: 'orders_updated' });
+  res.json({ ok: true });
+});
+
+// Image upload for orders — same Cloudinary stream pattern, but
+// returns the URL/public_id directly (caller stores it on the Order).
+router.post('/orders/upload-image', upload.single('file'), async (req, res) => {
+  if (!CLOUDINARY_ENABLED) return res.status(503).json({ detail: 'Cloudinary nicht konfiguriert' });
+  if (!req.file?.buffer) return res.status(400).json({ detail: 'Keine Datei gesendet' });
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'orders', resource_type: 'image', quality: 'auto:best', fetch_format: 'auto' },
+        (err, r) => err ? reject(err) : resolve(r),
+      );
+      stream.end(req.file.buffer);
+    });
+    const thumbnail = cloudinary.url(result.public_id, {
+      secure: true, width: 400, height: 400, crop: 'fill', gravity: 'auto', quality: 'auto', fetch_format: 'auto',
+    });
+    res.json({
+      ok: true,
+      url: result.secure_url,
+      thumbnail,
+      public_id: result.public_id,
+      width: result.width, height: result.height, bytes: result.bytes, format: result.format,
+    });
+  } catch (err) {
+    console.error('[orders/upload-image] Cloudinary error:', err?.message, err?.http_code);
+    res.status(500).json({ detail: 'Upload fehlgeschlagen: ' + (err?.message || 'unbekannt') });
+  }
 });
 
 // List photos for a task (light endpoint — just returns the photos sub-array).

@@ -31,6 +31,10 @@ import { adminCorrectTimes, adminUndoFinish, addTimelineEntry } from "./lib/work
 import { printTaskReport } from "./lib/printReport";
 import { downloadTaskPdf } from "./lib/pdfReport";
 import { MediaModal } from "./components/MediaModal";
+import {
+  BestellungHome, BestellungEdit, BestellungDetail,
+  BestellungArchive, BestellungArchiveMonth,
+} from "./components/BestellungViews";
 import { installOfflineSync } from "./lib/photos";
 import { useAdminName, setAdminName } from "./lib/adminName";
 import { useAdminTheme, setAdminTheme, resolveBg, isDark as isDarkHex } from "./lib/adminTheme";
@@ -62,7 +66,12 @@ export default function App() {
       <Route path="/admin/server" element={<AdminServer />} />
       <Route path="/tablet" element={<Tablet />} />
       <Route path="/lager" element={<ComingSoonPage title="LAGER" subtitle="Bestände · Material · Verbrauch" iconKey="box" color="#A78BFA" />} />
-      <Route path="/bestellung" element={<ComingSoonPage title="BESTELLUNG" subtitle="Anfragen · Lieferanten · Status" iconKey="cart" color="#F472B6" />} />
+      <Route path="/bestellung" element={<BestellungHome />} />
+      <Route path="/bestellung/neu" element={<BestellungEdit />} />
+      <Route path="/bestellung/edit/:id" element={<BestellungEdit />} />
+      <Route path="/bestellung/archiv" element={<BestellungArchive />} />
+      <Route path="/bestellung/archiv/:month" element={<BestellungArchiveMonth />} />
+      <Route path="/bestellung/:id" element={<BestellungDetail />} />
       <Route path="*" element={<Landing />} />
     </Routes>
   );
