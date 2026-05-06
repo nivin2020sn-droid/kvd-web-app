@@ -323,6 +323,13 @@ function AdminHome() {
   const [undoTask, setUndoTask] = useState<Task | null>(null);
   const [mediaTask, setMediaTask] = useState<Task | null>(null);
   const [archiveConfirm, setArchiveConfirm] = useState<{ task: Task; wf: TaskWorkflow } | null>(null);
+  // Collapse/Expand — purely visual. Only ONE task card expanded at a time.
+  // By default: all collapsed. Tapping a header toggles it; tapping another
+  // card's header collapses the previous one. Finished tasks stay collapsed
+  // unless the user explicitly opens them.
+  // IMPORTANT: Does NOT touch workflow/status/timer/DB — UI-only state.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const toggleExpand = (id: string) => setExpandedId((prev) => (prev === id ? null : id));
   const [busyId, setBusyId] = useState<string>("");
   const dateInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -508,20 +515,52 @@ function AdminHome() {
           const isRunning = wfStatus === "running";
           const totalMs = totalWorkMs(wf, isRunning ? Date.now() : undefined);
           const lastEventColor = wf.last_event_type ? EVENT_COLOR[wf.last_event_type] : "#9CA3AF";
+          const isExpanded = expandedId === t.id;
+          const personsLabel = t.person_ids.map(personName).join(" · ") || "Keine Personen";
           return (
-            <div key={t.id} className="bg-surface-card border border-surface-border p-3.5 space-y-2 rounded-xl">
-              <div className="flex gap-2 items-start">
-                <div className="flex-1">
-                  <div className="text-[17px] font-extrabold">{t.task_type}</div>
-                  <div className="text-white/50 text-xs tracking-wider mt-0.5">Haus {t.haus} · Station {t.station} · {t.time_from}–{t.time_to}</div>
+            <div key={t.id} className="bg-surface-card border border-surface-border rounded-xl overflow-hidden">
+              {/* Compact header — always visible, clickable to toggle expand */}
+              <button
+                type="button"
+                onClick={() => toggleExpand(t.id)}
+                aria-expanded={isExpanded}
+                className="w-full px-3.5 py-3 text-left active:bg-white/5 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="font-extrabold text-[15px] truncate">
+                      {t.task_type} <span className="opacity-50">·</span> Haus {t.haus}
+                    </div>
+                    <div className="text-xs opacity-60 truncate">{personsLabel}</div>
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
+                      <span className="text-[11px] font-black tracking-wide" style={{ color: STATUS_COLOR[wfStatus] }}>
+                        {STATUS_LABEL_DE[wfStatus]}
+                      </span>
+                      {isRunning && (
+                        <span className="ml-auto text-[10px] font-mono tabular-nums opacity-60">
+                          {formatDuration(totalMs)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div
+                    className="w-7 h-7 rounded-full border border-white/15 flex items-center justify-center text-[10px] shrink-0 transition-transform"
+                    style={{ transform: isExpanded ? "rotate(180deg)" : "none" }}
+                    aria-hidden
+                  >
+                    ▼
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 border rounded-full px-2.5 py-1" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "15" }}>
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
-                  <span className="text-[10px] font-bold tracking-wide" style={{ color: STATUS_COLOR[wfStatus] }}>{STATUS_LABEL_DE[wfStatus]}</span>
-                </div>
-              </div>
+              </button>
+
+              {/* Expanded body — full details, unchanged logic */}
+              {isExpanded && (
+              <div className="px-3.5 pb-3.5 pt-1 space-y-2 border-t border-white/5">
               {t.description && <div className="text-sm">{t.description}</div>}
-              <div className="text-white/50 text-xs italic">{t.person_ids.map(personName).join(", ") || "Keine Personen"}</div>
+              <div className="text-white/50 text-xs italic">
+                Haus {t.haus} · Station {t.station} · {t.time_from}–{t.time_to}
+              </div>
 
               {/* Workflow info grid – live updates */}
               <div className="grid grid-cols-2 gap-2 mt-1">
@@ -607,6 +646,8 @@ function AdminHome() {
                   </button>
                 )}
               </div>
+              </div>
+              )}
             </div>
           );
         });
@@ -1801,6 +1842,10 @@ function Tablet() {
   const [tlBusy, setTlBusy] = useState(false);
   // Media modal (photo gallery)
   const [mediaTask, setMediaTask] = useState<Task | null>(null);
+  // Collapse/Expand — visual only. Only ONE task expanded at a time.
+  // Safe for Mitarbeiter: never touches workflow/timer/status/DB.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const toggleExpand = (id: string) => setExpandedId((prev) => (prev === id ? null : id));
   // Install offline upload sync on mount
   useEffect(() => { const stop = installOfflineSync(() => load()); return stop; /* eslint-disable-next-line */ }, []);
   // Toast for user feedback on non-destructive workflow actions (Feierabend)
@@ -1945,8 +1990,61 @@ function Tablet() {
             // tick is referenced so re-render happens each second when running
             void tick;
             const lastEventColor = wf.last_event_type ? EVENT_COLOR[wf.last_event_type] : "#9CA3AF";
+            const isExpanded = expandedId === t.id;
+            const personsLabel = t.person_ids.map(pn).join(" · ") || "Keine Personen";
             return (
-              <div key={t.id} className="border rounded-2xl p-4 space-y-2.5 shadow-lg overflow-hidden" style={{ backgroundColor: dark ? "rgba(15,15,18,0.88)" : "rgba(255,255,255,0.92)", borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)", color: dark ? "#fff" : "#000", maxWidth: "100%" }}>
+              <div key={t.id} className="border rounded-2xl shadow-lg overflow-hidden" style={{ backgroundColor: dark ? "rgba(15,15,18,0.88)" : "rgba(255,255,255,0.92)", borderColor: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)", color: dark ? "#fff" : "#000", maxWidth: "100%" }}>
+                {/* Compact header — tap to expand/collapse. Pure visual, no workflow mutation. */}
+                <button
+                  type="button"
+                  onClick={() => toggleExpand(t.id)}
+                  aria-expanded={isExpanded}
+                  className="w-full px-4 py-3 text-left transition-colors"
+                  style={{ color: "inherit", backgroundColor: "transparent" }}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div
+                        className="font-extrabold text-[17px] leading-tight"
+                        style={{ overflowWrap: "break-word", wordBreak: "break-word", whiteSpace: "normal" }}
+                      >
+                        {t.task_type} <span style={{ color: textMuted }}>·</span> Haus {t.haus}
+                      </div>
+                      <div
+                        className="text-sm italic"
+                        style={{ color: textMuted, overflowWrap: "break-word", wordBreak: "break-word" }}
+                      >
+                        {personsLabel}
+                      </div>
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
+                        <span className="text-xs font-black tracking-wide" style={{ color: STATUS_COLOR[wfStatus] }}>
+                          {STATUS_LABEL_DE[wfStatus]}
+                        </span>
+                        {isRunning && (
+                          <span className="ml-auto text-xs font-mono tabular-nums" style={{ color: textMuted }}>
+                            {formatDuration(totalMs)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div
+                      className="w-9 h-9 rounded-full border flex items-center justify-center text-xs shrink-0 transition-transform"
+                      style={{
+                        transform: isExpanded ? "rotate(180deg)" : "none",
+                        borderColor: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)",
+                        color: textMuted,
+                      }}
+                      aria-hidden
+                    >
+                      ▼
+                    </div>
+                  </div>
+                </button>
+
+                {/* Expanded body — full details, unchanged behaviour */}
+                {isExpanded && (
+                <div className="px-4 pb-4 pt-1 space-y-2.5 border-t" style={{ borderColor: dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
                 <div className="flex items-start gap-3 flex-wrap">
                   <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/5 shrink-0">
                     <span className="font-extrabold">{t.time_from}</span>
@@ -1955,29 +2053,17 @@ function Tablet() {
                   </div>
                   <div className="flex-1 min-w-[120px] max-w-full overflow-hidden">
                     <div
-                      className="text-lg font-extrabold leading-tight"
-                      style={{ overflowWrap: "break-word", wordBreak: "break-word", whiteSpace: "normal", maxWidth: "100%" }}
-                    >
-                      {t.task_type}
-                    </div>
-                    <div
-                      className="text-xs font-bold tracking-widest mt-0.5"
+                      className="text-xs font-bold tracking-widest"
                       style={{ color: textMuted, overflowWrap: "break-word", wordBreak: "break-word" }}
                     >
                       HAUS {t.haus} · STATION {t.station}
                     </div>
-                  </div>
-                  {/* Status badge (workflow) */}
-                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border shrink-0" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "15" }}>
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
-                    <span className="text-xs font-bold" style={{ color: STATUS_COLOR[wfStatus] }}>{STATUS_LABEL_DE[wfStatus]}</span>
                   </div>
                 </div>
 
                 {t.description && (
                   <div className="text-sm" style={{ overflowWrap: "break-word", wordBreak: "break-word", whiteSpace: "normal" }}>{t.description}</div>
                 )}
-                <div className="text-sm italic" style={{ color: textMuted, overflowWrap: "break-word", wordBreak: "break-word" }}>{t.person_ids.map(pn).join(" · ") || "—"}</div>
 
                 {/* Workflow info grid */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1">
@@ -2048,6 +2134,8 @@ function Tablet() {
                     <Icon d={ICONS.timeline} size={13} color={EVENT_COLOR.timeline} /> TIMELINE
                   </button>
                 </div>
+                </div>
+                )}
               </div>
             );
           })}
