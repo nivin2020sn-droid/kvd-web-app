@@ -242,14 +242,15 @@ for (const kind of Object.keys(KIND_MODEL)) mountKind(kind);
 // Tasks
 router.get('/tasks/today', async (req, res) => {
   const today = todayStr();
-  res.json(await TaskModel.find({ archived: false, task_date: today }, { _id: 0 }).lean());
+  // Use $ne:true so tasks where `archived` is null/undefined (legacy data) still match.
+  res.json(await TaskModel.find({ archived: { $ne: true }, task_date: today }, { _id: 0 }).lean());
 });
 
 // Generic: GET /tasks/by-date?date=YYYY-MM-DD (used by Admin Heute/Morgen tabs + by Tablet "Für morgen" panel)
 router.get('/tasks/by-date', async (req, res) => {
   const date = String(req.query.date || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: 'date muss YYYY-MM-DD sein' });
-  res.json(await TaskModel.find({ archived: false, task_date: date }, { _id: 0 }).lean());
+  res.json(await TaskModel.find({ archived: { $ne: true }, task_date: date }, { _id: 0 }).lean());
 });
 
 // Alias matching the spec the user asked for: GET /api/tasks?date=YYYY-MM-DD
@@ -259,19 +260,72 @@ router.get('/tasks', async (req, res) => {
   const date = String(req.query.date || '').trim();
   if (date) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: 'date muss YYYY-MM-DD sein' });
-    return res.json(await TaskModel.find({ archived: false, task_date: date }, { _id: 0 }).lean());
+    return res.json(await TaskModel.find({ archived: { $ne: true }, task_date: date }, { _id: 0 }).lean());
   }
-  res.json(await TaskModel.find({ archived: false }, { _id: 0 }).sort({ task_date: -1 }).lean());
+  res.json(await TaskModel.find({ archived: { $ne: true } }, { _id: 0 }).sort({ task_date: -1 }).lean());
 });
 
 // Distinct list of dates that have tasks (used by Admin date-jump UI).
 router.get('/tasks/dates', async (req, res) => {
   const rows = await TaskModel.aggregate([
-    { $match: { archived: false } },
+    { $match: { archived: { $ne: true } } },
     { $group: { _id: '$task_date', count: { $sum: 1 } } },
     { $sort: { _id: -1 } },
   ]);
   res.json(rows.map(r => ({ date: r._id, count: r.count })));
+});
+
+// =============== DIAGNOSTIC: detect "lost" tasks ===============
+// Returns tasks that may not show up in the regular day-views because of
+// missing/invalid task_date or other oddities. Useful to debug issues like
+// "I restored a task and it disappeared".
+router.get('/debug/lost-tasks', async (req, res) => {
+  const all = await TaskModel.find({}, { _id: 0 }).lean();
+  const lost = {
+    no_task_date: [],          // archived=false but task_date missing / empty / malformed
+    archived_but_no_archive_date: [], // archived=true but archive_date missing
+    archived_field_undefined: [],     // archived field is missing entirely (legacy)
+    counts: { total: all.length, archived: 0, active: 0 },
+  };
+  const isValidDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+  for (const t of all) {
+    if (t.archived === true) lost.counts.archived++;
+    else lost.counts.active++;
+    if (t.archived === undefined || t.archived === null) {
+      lost.archived_field_undefined.push({ id: t.id, task_type: t.task_type, task_date: t.task_date });
+    }
+    if (t.archived !== true && !isValidDate(t.task_date)) {
+      lost.no_task_date.push({ id: t.id, task_type: t.task_type, task_date: t.task_date, created_at: t.created_at });
+    }
+    if (t.archived === true && !isValidDate(t.archive_date)) {
+      lost.archived_but_no_archive_date.push({ id: t.id, task_type: t.task_type, archive_date: t.archive_date });
+    }
+  }
+  res.json(lost);
+});
+
+// One-off cleanup endpoint: backfill missing task_date from created_at, fix
+// inconsistent archived flag. Admin only — safe to run multiple times.
+router.post('/debug/heal-tasks', requireAdmin, async (req, res) => {
+  const all = await TaskModel.find({}, { _id: 0 }).lean();
+  const isValidDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+  const healed = [];
+  for (const t of all) {
+    const update = {};
+    if (!isValidDate(t.task_date)) {
+      const fallback = isValidDate(String(t.created_at || '').slice(0, 10))
+        ? String(t.created_at).slice(0, 10)
+        : todayStr();
+      update.task_date = fallback;
+    }
+    if (t.archived === undefined || t.archived === null) update.archived = false;
+    if (Object.keys(update).length) {
+      await TaskModel.updateOne({ id: t.id }, { $set: update });
+      healed.push({ id: t.id, task_type: t.task_type, fix: update });
+    }
+  }
+  broadcast({ type: 'tasks_updated' });
+  res.json({ ok: true, healed_count: healed.length, healed });
 });
 
 router.post('/tasks', requireAdmin, async (req, res) => {
@@ -640,20 +694,52 @@ router.get('/tasks/archive', async (req, res) => {
   res.json({ dates: dates.filter(Boolean).sort().reverse(), tasks: [] });
 });
 
-// Restore an archived task — sets archived=false. Workflow/photos/timeline are
-// preserved verbatim (we never deleted them on archive). The task simply
+// Restore an archived task — sets archived=false, ensures it has a valid
+// task_date so it actually appears under a day-view, and returns the full task
+// (with its restored task_date) so the client can navigate to that day.
+//
+// Workflow/photos/timeline/persons/notes are PRESERVED VERBATIM (we never
+// touch them — archiving has always been a single-flag flip). The task simply
 // reappears under its original task_date.
 router.post('/tasks/:id/restore', requireAdmin, async (req, res) => {
+  const isValidDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
   const t = await TaskModel.findOne({ id: req.params.id }, { _id: 0 }).lean();
   if (!t) return res.status(404).json({ detail: 'Aufgabe nicht gefunden' });
-  if (!t.archived) return res.json({ ok: true, already_active: true, task: t });
+
+  // Build the $set payload defensively. Always:
+  //   - flip archived → false
+  //   - clear archive_date
+  //   - GUARANTEE a valid task_date so the task is reachable from `Plan für …`
+  const update = { archived: false, archive_date: null };
+  let restoredDate = isValidDate(t.task_date) ? t.task_date : null;
+  let dateSource = restoredDate ? 'preserved' : null;
+  if (!restoredDate) {
+    // Fallback chain:
+    //   1) created_at first 10 chars (YYYY-MM-DD)
+    //   2) archive_date (the day it was archived)
+    //   3) today as last resort
+    const createdSlice = String(t.created_at || '').slice(0, 10);
+    if (isValidDate(createdSlice)) { restoredDate = createdSlice; dateSource = 'created_at'; }
+    else if (isValidDate(t.archive_date)) { restoredDate = t.archive_date; dateSource = 'archive_date'; }
+    else { restoredDate = todayStr(); dateSource = 'today_fallback'; }
+    update.task_date = restoredDate;
+    console.warn(`[restore] task ${t.id} had invalid task_date="${t.task_date}" — using ${dateSource}=${restoredDate}`);
+  }
+
   const updated = await TaskModel.findOneAndUpdate(
     { id: req.params.id },
-    { $set: { archived: false, archive_date: null } },
+    { $set: update },
     { new: true, projection: { _id: 0 } },
   ).lean();
+  // Tablet + Admin both listen for this and refetch automatically.
   broadcast({ type: 'tasks_updated' });
-  res.json({ ok: true, task: updated });
+  res.json({
+    ok: true,
+    task: updated,
+    restored_to_date: restoredDate,
+    date_source: dateSource,        // "preserved" | "created_at" | "archive_date" | "today_fallback"
+    photos_count: Array.isArray(updated?.photos) ? updated.photos.length : 0,
+  });
 });
 
 router.get('/update-info', (req, res) => {

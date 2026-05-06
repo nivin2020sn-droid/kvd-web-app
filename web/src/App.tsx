@@ -213,7 +213,17 @@ function AdminHome() {
     } catch { return iso; }
   };
 
-  const [viewDate, setViewDate] = useState<string>(todayISO());
+  const [viewDate, setViewDate] = useState<string>(() => {
+    // If we just restored a task, sessionStorage will tell us which day to show.
+    try {
+      const jump = sessionStorage.getItem("admin_jump_to_date");
+      if (jump && /^\d{4}-\d{2}-\d{2}$/.test(jump)) {
+        sessionStorage.removeItem("admin_jump_to_date");
+        return jump;
+      }
+    } catch {}
+    return todayISO();
+  });
   const [tasks, setTasks] = useState<Task[]>([]);
   const [persons, setPersons] = useState<SimpleItem[]>([]);
   const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
@@ -1225,6 +1235,7 @@ function AdminArchive() {
   const [resetting, setResetting] = useState(false);
   const [restoringId, setRestoringId] = useState<string>("");
   const [restoreMsg, setRestoreMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [lastRestoredDate, setLastRestoredDate] = useState<string | null>(null);
   const loadAll = async () => {
     const [d, p, wfMap] = await Promise.all([
       api<{ dates: string[] }>("/tasks/archive"),
@@ -1255,18 +1266,42 @@ function AdminArchive() {
     setRestoringId(t.id);
     setRestoreMsg(null);
     try {
-      await api(`/tasks/${t.id}/restore`, { method: "POST", auth: true });
-      // Remove the task from the local archive list immediately
+      const r = await api<{ ok: true; task: Task; restored_to_date?: string; date_source?: string; photos_count?: number }>(
+        `/tasks/${t.id}/restore`, { method: "POST", auth: true }
+      );
+      // Remove from local archive list immediately
       setTasks((prev) => prev.filter((x) => x.id !== t.id));
-      setRestoreMsg({ kind: "ok", text: `✓ „${t.task_type}“ wiederhergestellt unter ${t.task_date || "ursprüngliches Datum"}.` });
-      // If this was the last task on this archive date, refresh the dates list
-      if (selected) {
-        const r = await api<{ tasks: Task[] }>(`/tasks/archive?date=${selected}`).catch(() => ({ tasks: [] as Task[] }));
-        if (!r.tasks || r.tasks.length === 0) {
-          await loadAll();
-          setSelected(null);
-          setTasks([]);
-        }
+
+      const targetDate = r.restored_to_date || r.task?.task_date || t.task_date || "";
+      const sourceWarning = r.date_source && r.date_source !== "preserved"
+        ? ` (Datum war leer — automatisch gesetzt auf ${targetDate})`
+        : "";
+
+      // Build a German-formatted label for the toast
+      const fmtLabel = (iso: string) => {
+        try {
+          const d = new Date(iso + "T12:00:00Z");
+          return d.toLocaleDateString("de-DE", {
+            weekday: "long", day: "2-digit", month: "2-digit", year: "numeric",
+            timeZone: "Europe/Berlin",
+          });
+        } catch { return iso; }
+      };
+
+      setRestoreMsg({
+        kind: "ok",
+        text: `✓ „${t.task_type}“ wurde wiederhergestellt unter ${fmtLabel(targetDate)}${sourceWarning}.`,
+      });
+
+      // Stash the date so user gets a "Jetzt ansehen" button to jump there
+      setLastRestoredDate(targetDate || null);
+
+      // Refresh the archive date list (in case this date now has 0 entries)
+      const rr = await api<{ tasks: Task[] }>(`/tasks/archive?date=${selected}`).catch(() => ({ tasks: [] as Task[] }));
+      if (!rr.tasks || rr.tasks.length === 0) {
+        await loadAll();
+        setSelected(null);
+        setTasks([]);
       }
     } catch (e: any) {
       setRestoreMsg({ kind: "err", text: "Wiederherstellen fehlgeschlagen: " + (e?.message || "Unbekannter Fehler") });
@@ -1284,12 +1319,26 @@ function AdminArchive() {
         <div className="w-7" />
       </div>
       {restoreMsg && (
-        <div className={`mx-4 mt-3 px-3 py-2 rounded-lg border text-xs flex items-center gap-2 ${
+        <div className={`mx-4 mt-3 px-3 py-2 rounded-lg border text-xs ${
           restoreMsg.kind === "ok" ? "bg-green-500/15 border-green-500/40 text-green-300"
                                    : "bg-red-500/15 border-red-500/40 text-red-300"
         }`}>
-          <span className="flex-1" style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>{restoreMsg.text}</span>
-          <button onClick={() => setRestoreMsg(null)} className="opacity-70 hover:opacity-100">✕</button>
+          <div className="flex items-start gap-2">
+            <span className="flex-1" style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>{restoreMsg.text}</span>
+            <button onClick={() => { setRestoreMsg(null); setLastRestoredDate(null); }} className="opacity-70 hover:opacity-100">✕</button>
+          </div>
+          {restoreMsg.kind === "ok" && lastRestoredDate && (
+            <button
+              onClick={() => {
+                // Persist target date in sessionStorage so AdminHome jumps to it on mount.
+                try { sessionStorage.setItem("admin_jump_to_date", lastRestoredDate!); } catch {}
+                nav("/admin");
+              }}
+              className="mt-2 w-full h-9 rounded-md border border-green-500/60 bg-green-500/20 text-green-200 text-[11px] font-black tracking-wide active:scale-95"
+            >
+              → JETZT IM PLAN ANSEHEN
+            </button>
+          )}
         </div>
       )}
       <div className="p-4 space-y-3">
