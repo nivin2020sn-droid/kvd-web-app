@@ -223,6 +223,7 @@ function AdminHome() {
   const [timeEditTask, setTimeEditTask] = useState<Task | null>(null);
   const [undoTask, setUndoTask] = useState<Task | null>(null);
   const [mediaTask, setMediaTask] = useState<Task | null>(null);
+  const [archiveConfirm, setArchiveConfirm] = useState<{ task: Task; wf: TaskWorkflow } | null>(null);
   const [busyId, setBusyId] = useState<string>("");
   const dateInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -278,9 +279,9 @@ function AdminHome() {
     if (!confirm("Alle heutigen Aufgaben archivieren?")) return;
     try { await api("/tasks/archive-now", { method: "POST", auth: true }); load(); } catch (e: any) { alert("Fehler: " + (e?.message || "")); }
   };
+  // archiveOne is invoked via the ArchiveConfirmModal — see archiveConfirmTask state below.
   const archiveOne = async (id: string) => {
-    if (!confirm("Aufgabe archivieren? Sie wird aus der Tagesliste entfernt.")) return;
-    try { await api(`/tasks/${id}`, { method: "DELETE", auth: true }); load(); } catch {}
+    try { await api(`/tasks/${id}`, { method: "DELETE", auth: true }); load(); } catch (e: any) { alert("Fehler: " + (e?.message || "")); }
   };
   const deleteOne = async (id: string) => {
     if (!confirm("Aufgabe ENDGÜLTIG löschen? Diese Aktion kann nicht rückgängig gemacht werden.")) return;
@@ -464,7 +465,7 @@ function AdminHome() {
                 <button onClick={() => printTaskReport(t, wf, persons)} className="h-10 rounded-lg border border-brand-blue/60 bg-blue-500/10 text-brand-blue text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
                   <Icon d={ICONS.print} size={14} color="#3B82F6" /> Drucken
                 </button>
-                <button onClick={() => archiveOne(t.id)} className="h-10 rounded-lg border border-brand-orange/60 bg-orange-500/10 text-brand-orange text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
+                <button onClick={() => setArchiveConfirm({ task: t, wf })} className="h-10 rounded-lg border border-brand-orange/60 bg-orange-500/10 text-brand-orange text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
                   <Icon d={ICONS.archive} size={14} color="#FF9500" /> Archivieren
                 </button>
                 <button onClick={() => deleteOne(t.id)} className="h-10 rounded-lg border border-brand-red/60 bg-red-500/10 text-brand-red text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5">
@@ -558,6 +559,94 @@ function AdminHome() {
         onPhotosChanged={() => load()}
       />
     )}
+    {archiveConfirm && (
+      <ArchiveConfirmModal
+        task={archiveConfirm.task}
+        wf={archiveConfirm.wf}
+        onCancel={() => setArchiveConfirm(null)}
+        onConfirm={async () => {
+          const id = archiveConfirm.task.id;
+          setArchiveConfirm(null);
+          await archiveOne(id);
+        }}
+      />
+    )}
+    </div>
+  );
+}
+
+// ---------- Archive confirmation modal with smart "not finished" warning ----------
+function ArchiveConfirmModal({ task, wf, onCancel, onConfirm }: {
+  task: Task;
+  wf: TaskWorkflow;
+  onCancel: () => void;
+  onConfirm: () => void | Promise<void>;
+}) {
+  const status = wf?.status || "idle";
+  const isFinished = status === "finished";
+  const isDeferred = status === "deferred";
+  const isInProgress = status === "running" || status === "paused" || status === "prepared";
+  // Reasons displayed in the warning box (red box only shown when not finished)
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-5">
+      <div
+        className="w-full max-w-md rounded-2xl p-5 space-y-4"
+        style={{ backgroundColor: "rgba(24,24,28,0.98)", border: "2px solid #FF9500" }}
+      >
+        <div>
+          <div className="text-xs font-bold tracking-widest uppercase opacity-60">Archivieren</div>
+          <div className="text-lg font-black text-white mt-0.5">Diese Aufgabe wirklich archivieren?</div>
+        </div>
+
+        <div className="rounded-lg px-3 py-2.5 border border-white/10 bg-white/5">
+          <div className="font-extrabold text-white truncate">{task.task_type}</div>
+          <div className="text-xs opacity-60">Haus {task.haus} · Station {task.station} · {task.time_from}–{task.time_to}</div>
+          {task.task_date && <div className="text-[11px] opacity-50 mt-0.5">Datum: {task.task_date}</div>}
+        </div>
+
+        {!isFinished && (
+          <div className="rounded-lg px-3 py-2.5 border-2 border-red-500 bg-red-500/15">
+            <div className="text-red-400 font-black text-sm flex items-center gap-2">
+              <span>⚠</span>
+              <span>Aufgabe ist noch nicht abgeschlossen</span>
+            </div>
+            <div className="text-red-200/90 text-xs mt-1.5 leading-relaxed">
+              {isDeferred
+                ? "Status: „Wird morgen fortgesetzt“. Wenn Sie jetzt archivieren, geht der Fortsetzungs-Plan verloren."
+                : isInProgress
+                ? `Aktueller Status: „${STATUS_LABEL_DE[status]}“. Es wurde noch nicht „Beendet“ gedrückt.`
+                : "Es wurde noch kein „Beendet“ erfasst."}
+              {" "}Die Aufgabe wandert ins Archiv, kann aber jederzeit dort wiederhergestellt werden.
+            </div>
+          </div>
+        )}
+
+        {isFinished && (
+          <div className="rounded-lg px-3 py-2 border border-green-500/40 bg-green-500/10">
+            <div className="text-green-400 text-xs font-bold">✓ Aufgabe ist abgeschlossen ({STATUS_LABEL_DE[status]})</div>
+          </div>
+        )}
+
+        <div className="text-[11px] opacity-50 leading-relaxed">
+          Hinweis: Timeline, Fotos, Zeiten und Notizen bleiben vollständig erhalten.
+          Sie können die Aufgabe jederzeit aus dem Archiv wiederherstellen.
+        </div>
+
+        <div className="flex gap-2 pt-1">
+          <button
+            onClick={onCancel}
+            className="flex-1 h-12 rounded-xl border-2 border-white/15 bg-white/5 text-white font-black tracking-wide active:scale-95"
+          >
+            Abbrechen
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`flex-1 h-12 rounded-xl font-black tracking-wide active:scale-95 ${isFinished ? "bg-brand-orange text-black" : "bg-red-500 text-white"}`}
+          >
+            Ja, archivieren
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1134,6 +1223,8 @@ function AdminArchive() {
   const [persons, setPersons] = useState<SimpleItem[]>([]);
   const [workflows, setWorkflows] = useState<Record<string, TaskWorkflow>>({});
   const [resetting, setResetting] = useState(false);
+  const [restoringId, setRestoringId] = useState<string>("");
+  const [restoreMsg, setRestoreMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const loadAll = async () => {
     const [d, p, wfMap] = await Promise.all([
       api<{ dates: string[] }>("/tasks/archive"),
@@ -1159,15 +1250,48 @@ function AdminArchive() {
       alert("Fehler: " + (e?.message || ""));
     } finally { setResetting(false); }
   };
+  const restoreTask = async (t: Task) => {
+    if (!confirm(`Aufgabe „${t.task_type}“ wiederherstellen?\n\nDie Aufgabe erscheint wieder unter ihrem ursprünglichen Datum (${t.task_date || "—"}). Timeline, Fotos, Zeiten und Notizen bleiben erhalten.`)) return;
+    setRestoringId(t.id);
+    setRestoreMsg(null);
+    try {
+      await api(`/tasks/${t.id}/restore`, { method: "POST", auth: true });
+      // Remove the task from the local archive list immediately
+      setTasks((prev) => prev.filter((x) => x.id !== t.id));
+      setRestoreMsg({ kind: "ok", text: `✓ „${t.task_type}“ wiederhergestellt unter ${t.task_date || "ursprüngliches Datum"}.` });
+      // If this was the last task on this archive date, refresh the dates list
+      if (selected) {
+        const r = await api<{ tasks: Task[] }>(`/tasks/archive?date=${selected}`).catch(() => ({ tasks: [] as Task[] }));
+        if (!r.tasks || r.tasks.length === 0) {
+          await loadAll();
+          setSelected(null);
+          setTasks([]);
+        }
+      }
+    } catch (e: any) {
+      setRestoreMsg({ kind: "err", text: "Wiederherstellen fehlgeschlagen: " + (e?.message || "Unbekannter Fehler") });
+    } finally {
+      setRestoringId("");
+    }
+  };
   const pn = (id: string) => persons.find((x) => x.id === id)?.name || "—";
 
   if (selected) return (
     <div className="min-h-full">
       <div className="flex items-center justify-between p-4 border-b border-surface-border">
-        <button onClick={() => { setSelected(null); setTasks([]); }}><Icon d={ICONS.back} size={28} /></button>
+        <button onClick={() => { setSelected(null); setTasks([]); setRestoreMsg(null); }}><Icon d={ICONS.back} size={28} /></button>
         <div className="font-black tracking-[3px] text-sm">{selected}</div>
         <div className="w-7" />
       </div>
+      {restoreMsg && (
+        <div className={`mx-4 mt-3 px-3 py-2 rounded-lg border text-xs flex items-center gap-2 ${
+          restoreMsg.kind === "ok" ? "bg-green-500/15 border-green-500/40 text-green-300"
+                                   : "bg-red-500/15 border-red-500/40 text-red-300"
+        }`}>
+          <span className="flex-1" style={{ overflowWrap: "break-word", wordBreak: "break-word" }}>{restoreMsg.text}</span>
+          <button onClick={() => setRestoreMsg(null)} className="opacity-70 hover:opacity-100">✕</button>
+        </div>
+      )}
       <div className="p-4 space-y-3">
         {tasks.length === 0 && <div className="text-white/50 text-center mt-10">Keine Aufgaben in diesem Archiv</div>}
         {tasks.map((t) => {
@@ -1175,12 +1299,14 @@ function AdminArchive() {
           const wfStatus: WorkflowStatus = wf?.status || "idle";
           const totalMs = wf ? totalWorkMs(wf) : 0;
           const pauseMs = wf ? totalPauseMs(wf) : 0;
+          const isRestoring = restoringId === t.id;
           return (
             <div key={t.id} className="bg-surface-card border border-surface-border p-3.5 rounded-xl space-y-2">
               <div className="flex gap-2 items-start">
                 <div className="flex-1 min-w-0">
                   <div className="font-extrabold truncate">{t.task_type}</div>
                   <div className="text-white/50 text-xs">Haus {t.haus} · Station {t.station} · {t.time_from}–{t.time_to}</div>
+                  {t.task_date && <div className="text-white/40 text-[10px] mt-0.5">Ursprüngliches Datum: <span className="font-bold text-white/70">{t.task_date}</span></div>}
                 </div>
                 <div className="flex items-center gap-1.5 border rounded-full px-2.5 py-1" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "15" }}>
                   <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: STATUS_COLOR[wfStatus] }} />
@@ -1225,6 +1351,15 @@ function AdminArchive() {
                   <Icon d={ICONS.pdf} size={14} color="#00E676" /> PDF herunterladen
                 </button>
               </div>
+              {/* Restore button — full-width, prominent (cyan/teal) */}
+              <button
+                onClick={() => restoreTask(t)}
+                disabled={isRestoring}
+                className="w-full h-12 rounded-xl border-2 font-black tracking-[1.5px] text-sm active:scale-95 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                style={{ borderColor: "#06B6D4", backgroundColor: "#06B6D415", color: "#06B6D4" }}
+              >
+                {isRestoring ? "Wiederherstellen…" : "🔄 AUS ARCHIV ZURÜCKHOLEN"}
+              </button>
             </div>
           );
         })}

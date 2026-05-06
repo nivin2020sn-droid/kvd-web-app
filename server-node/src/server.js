@@ -640,6 +640,22 @@ router.get('/tasks/archive', async (req, res) => {
   res.json({ dates: dates.filter(Boolean).sort().reverse(), tasks: [] });
 });
 
+// Restore an archived task — sets archived=false. Workflow/photos/timeline are
+// preserved verbatim (we never deleted them on archive). The task simply
+// reappears under its original task_date.
+router.post('/tasks/:id/restore', requireAdmin, async (req, res) => {
+  const t = await TaskModel.findOne({ id: req.params.id }, { _id: 0 }).lean();
+  if (!t) return res.status(404).json({ detail: 'Aufgabe nicht gefunden' });
+  if (!t.archived) return res.json({ ok: true, already_active: true, task: t });
+  const updated = await TaskModel.findOneAndUpdate(
+    { id: req.params.id },
+    { $set: { archived: false, archive_date: null } },
+    { new: true, projection: { _id: 0 } },
+  ).lean();
+  broadcast({ type: 'tasks_updated' });
+  res.json({ ok: true, task: updated });
+});
+
 router.get('/update-info', (req, res) => {
   res.json({ latest_version: '1.0.0', download_url: '', changelog: '', mandatory: false });
 });
