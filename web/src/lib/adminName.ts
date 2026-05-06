@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 
 const KEY = "admin_name_v1";
-const DEFAULT_NAME = "Admin";
+const DEFAULT_NAME = "Chef";
 
 let cached: string | null = null;
 let initialized = false;

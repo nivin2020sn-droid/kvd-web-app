@@ -62,6 +62,8 @@ export default function App() {
       <Route path="/admin/settings" element={<AdminSettings />} />
       <Route path="/admin/server" element={<AdminServer />} />
       <Route path="/tablet" element={<Tablet />} />
+      <Route path="/lager" element={<ComingSoonPage title="LAGER" subtitle="Bestände · Material · Verbrauch" iconKey="box" color="#A78BFA" />} />
+      <Route path="/bestellung" element={<ComingSoonPage title="BESTELLUNG" subtitle="Anfragen · Lieferanten · Status" iconKey="cart" color="#F472B6" />} />
       <Route path="*" element={<Landing />} />
     </Routes>
   );
@@ -72,26 +74,113 @@ const Spin = () => <div className="w-8 h-8 border-4 border-brand-yellow border-t
 // ============ Landing ============
 function Landing() {
   const nav = useNavigate();
-  const adminName = useAdminName();
+  // 4-section grid: CHEF · MITARBEITER · LAGER · BESTELLUNG.
+  // Note: The CHEF tile always shows "CHEF" on the landing page (the
+  // customisable display-name lives inside the admin header, not here).
+  const sections: { key: string; title: string; subtitle: string; iconKey: keyof typeof ICONS; color: string; onPress: () => void }[] = [
+    {
+      key: "chef",
+      title: "CHEF",
+      subtitle: "Aufgaben verwalten",
+      iconKey: "user",
+      color: "#FFD600",
+      onPress: () => nav("/admin/login"),
+    },
+    {
+      key: "mitarbeiter",
+      title: "MITARBEITER",
+      subtitle: "Aufgaben heute",
+      iconKey: "users",
+      color: "#00E676",
+      onPress: () => nav("/tablet"),
+    },
+    {
+      key: "lager",
+      title: "LAGER",
+      subtitle: "Bestände · Material",
+      iconKey: "box",
+      color: "#A78BFA",
+      onPress: () => nav("/lager"),
+    },
+    {
+      key: "bestellung",
+      title: "BESTELLUNG",
+      subtitle: "Anfragen · Lieferanten",
+      iconKey: "cart",
+      color: "#F472B6",
+      onPress: () => nav("/bestellung"),
+    },
+  ];
   return (
-    <div className="min-h-full p-6 flex flex-col justify-between">
-      <div className="mt-10">
-        <h1 className="text-4xl font-black tracking-[2px]">REINIGUNG</h1>
-        <p className="text-white/50 text-sm tracking-[4px] mt-2 uppercase">Aufgabenverwaltung</p>
+    <div className="min-h-full p-5 sm:p-6 flex flex-col">
+      <div className="mt-6 sm:mt-10 mb-6 sm:mb-8">
+        <h1 className="text-3xl sm:text-4xl font-black tracking-[2px]">REINIGUNG</h1>
+        <p className="text-white/50 text-xs sm:text-sm tracking-[4px] mt-2 uppercase">Aufgabenverwaltung</p>
       </div>
-      <div className="space-y-5">
-        <button onClick={() => nav("/admin/login")} className="w-full bg-surface-card border-2 border-brand-yellow p-7 text-left active:opacity-80 rounded-2xl">
-          <Icon d={ICONS.phone} size={40} color="#FFD600" />
-          <div className="text-white font-black text-2xl tracking-[3px] mt-3 uppercase truncate">{adminName}</div>
-          <div className="text-white/50 text-xs tracking-wider">Telefon · Aufgaben verwalten</div>
-        </button>
-        <button onClick={() => nav("/tablet")} className="w-full bg-surface-card border-2 border-brand-green p-7 text-left active:opacity-80 rounded-2xl">
-          <Icon d={ICONS.tablet} size={40} color="#00E676" />
-          <div className="text-white font-black text-2xl tracking-[3px] mt-3">TABLET</div>
-          <div className="text-white/50 text-xs tracking-wider">Wandanzeige · Aufgaben heute</div>
-        </button>
+
+      <div className="flex-1 grid grid-cols-2 gap-3 sm:gap-5 content-start">
+        {sections.map((s) => (
+          <button
+            key={s.key}
+            onClick={s.onPress}
+            className="aspect-square sm:aspect-[4/3] bg-surface-card border-2 rounded-2xl p-4 sm:p-6 flex flex-col items-center justify-center gap-2 sm:gap-3 active:scale-95 transition-transform"
+            style={{ borderColor: s.color + "66", backgroundColor: s.color + "0D" }}
+          >
+            <div
+              className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center"
+              style={{ backgroundColor: s.color + "1F", border: `1px solid ${s.color}55` }}
+            >
+              <Icon d={ICONS[s.iconKey]} size={36} color={s.color} />
+            </div>
+            <div className="text-center">
+              <div className="text-white font-black text-base sm:text-xl tracking-[2px] uppercase truncate">{s.title}</div>
+              <div className="text-white/50 text-[10px] sm:text-xs tracking-wider mt-0.5 truncate">{s.subtitle}</div>
+            </div>
+          </button>
+        ))}
       </div>
-      <p className="text-white/40 text-center text-xs tracking-[3px] uppercase">Gerät wählen</p>
+
+      <p className="text-white/40 text-center text-[10px] sm:text-xs tracking-[3px] uppercase mt-6 sm:mt-8">Bereich wählen</p>
+    </div>
+  );
+}
+
+// ============ Coming Soon Placeholder ============
+function ComingSoonPage({ title, subtitle, iconKey, color }: {
+  title: string;
+  subtitle?: string;
+  iconKey: keyof typeof ICONS;
+  color: string;
+}) {
+  const nav = useNavigate();
+  return (
+    <div className="min-h-full flex flex-col">
+      <div className="flex items-center justify-between p-4 border-b border-surface-border">
+        <button onClick={() => nav("/")}><Icon d={ICONS.back} size={28} /></button>
+        <div className="font-black tracking-[3px] text-sm">{title}</div>
+        <div className="w-7" />
+      </div>
+      <div className="flex-1 flex flex-col items-center justify-center p-8 gap-5">
+        <div
+          className="w-28 h-28 sm:w-36 sm:h-36 rounded-3xl flex items-center justify-center"
+          style={{ backgroundColor: color + "1F", border: `2px solid ${color}55` }}
+        >
+          <Icon d={ICONS[iconKey]} size={64} color={color} />
+        </div>
+        <div className="text-center space-y-1.5">
+          <div className="text-2xl sm:text-3xl font-black tracking-[3px] uppercase" style={{ color }}>{title}</div>
+          {subtitle && <div className="text-white/50 text-xs tracking-wider">{subtitle}</div>}
+        </div>
+        <div
+          className="rounded-full px-5 py-2 border-2 mt-2"
+          style={{ borderColor: color + "88", backgroundColor: color + "1A", color }}
+        >
+          <div className="text-sm font-black tracking-[2px]">Bald verfügbar</div>
+        </div>
+        <div className="text-white/40 text-xs text-center max-w-xs leading-relaxed mt-2">
+          Dieser Bereich wird in Kürze freigeschaltet. Sie werden informiert, sobald er bereit ist.
+        </div>
+      </div>
     </div>
   );
 }
