@@ -6,7 +6,7 @@
 
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
 async function resolvePrintWorkflow(taskId: string, fallback: TaskWorkflow | null): Promise<TaskWorkflow | null> {
@@ -99,8 +99,11 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     const corr = ev.corrections && ev.corrections.length
       ? `<div class="corrections">${ev.corrections.map((co) => `&bull; ${esc(EVENT_LABEL[co.target_type])}: ${esc(fmtTime24(co.old_ts))} &rarr; ${esc(co.new_display_time ? co.new_display_time + ':00' : fmtTime24(co.new_ts))}`).join("<br>")}</div>`
       : "";
-    const noteText = ev.note ? esc(ev.note) : `<span class="muted">—</span>`;
-    const createdBy = ev.created_by ? ` <span class="muted">(${esc(ev.created_by)})</span>` : "";
+    const noteText = (() => {
+      const display = formatEventNote(ev);
+      return display ? esc(display) : `<span class="muted">—</span>`;
+    })();
+    const createdBy = (ev.author_name || ev.created_by) ? ` <span class="muted">(${esc(ev.author_name || ev.created_by || "")})</span>` : "";
     const cls = ev.undone ? "undone" : "";
     return `
       <tr class="${cls}">

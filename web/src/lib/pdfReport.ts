@@ -7,7 +7,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
 function fmtDate(iso: string | null | undefined): string {
@@ -232,10 +232,11 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
     const body = evs.map((ev) => {
       const typeLabel = EVENT_LABEL[ev.type] || ev.type;
       const undone = ev.undone ? " (zurückgenommen)" : "";
-      const creator = ev.created_by ? `\n(${ev.created_by})` : "";
+      const author = ev.author_name || ev.created_by;
+      const creator = author ? `\n(${author})` : "";
       const typCell = `${typeLabel}${undone}${creator}`;
       const zeitCell = `${evTime(ev)}\n${evDate(ev)}`;
-      let notizCell = ev.note || "—";
+      let notizCell = formatEventNote(ev) || "—";
       if (ev.corrections && ev.corrections.length) {
         const corrStr = ev.corrections.map((co) => `• ${EVENT_LABEL[co.target_type]}: ${fmtTime24(co.old_ts)} → ${co.new_display_time ? co.new_display_time + ':00' : fmtTime24(co.new_ts)}`).join("\n");
         notizCell = notizCell === "—" ? corrStr : `${notizCell}\n${corrStr}`;

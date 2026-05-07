@@ -1106,7 +1106,7 @@ function recomputeWorkflow(wf) {
   };
 }
 
-function applyWorkflowEvent(wf, type, note, taskName, personsSnapshot) {
+function applyWorkflowEvent(wf, type, note, taskName, personsSnapshot, author) {
   const before = wf.status || 'idle';
   const now = new Date().toISOString();
   let after = before;
@@ -1162,6 +1162,8 @@ function applyWorkflowEvent(wf, type, note, taskName, personsSnapshot) {
     type, ts: now, note: note || '',
     status_before: before, status_after: after, task_name: taskName || '',
     persons: Array.isArray(personsSnapshot) ? personsSnapshot : undefined,
+    author_id: author?.id || undefined,
+    author_name: author?.name || undefined,
   });
   return wf;
 }
@@ -1185,7 +1187,7 @@ router.get('/workflows/:task_id', async (req, res) => {
 
 // POST event → apply, persist, broadcast
 router.post('/workflows/:task_id/event', async (req, res) => {
-  const { type, note, task_name } = req.body || {};
+  const { type, note, task_name, author_id, author_name } = req.body || {};
   if (!VALID_EVENTS.has(type)) return res.status(400).json({ detail: 'Invalid event type' });
   const existing = await WorkflowModel.findOne({ task_id: req.params.task_id }, { _id: 0 }).lean();
   const base = existing || {
@@ -1196,7 +1198,10 @@ router.post('/workflows/:task_id/event', async (req, res) => {
   // Snapshot current person_ids of the task (so we know who worked today)
   const taskDoc = await TaskModel.findOne({ id: req.params.task_id }, { _id: 0 }).lean();
   const personsSnapshot = taskDoc?.person_ids ? [...taskDoc.person_ids] : [];
-  const updated = applyWorkflowEvent({ ...base }, type, note, task_name, personsSnapshot);
+  const author = (author_id || author_name)
+    ? { id: author_id || undefined, name: (typeof author_name === 'string' ? author_name.trim() : '') || undefined }
+    : undefined;
+  const updated = applyWorkflowEvent({ ...base }, type, note, task_name, personsSnapshot, author);
   await WorkflowModel.findOneAndUpdate(
     { task_id: req.params.task_id },
     { $set: updated },
@@ -1328,7 +1333,7 @@ router.post('/workflows/:task_id/admin-undo-finish', requireAdmin, async (req, r
 
 // Mitarbeiter: Timeline-Eintrag hinzufügen (informativ, ändert weder Status noch Zeitberechnung)
 router.post('/workflows/:task_id/timeline', async (req, res) => {
-  const { time, date, note, task_name, created_by } = req.body || {};
+  const { time, date, note, task_name, created_by, author_id, author_name } = req.body || {};
   const m = typeof time === 'string' && time.match(/^(\d{2}):(\d{2})$/);
   if (!m) return res.status(400).json({ detail: 'time muss HH:MM sein' });
   const h = parseInt(m[1], 10); const min = parseInt(m[2], 10);
@@ -1357,7 +1362,9 @@ router.post('/workflows/:task_id/timeline', async (req, res) => {
     status_before: wf.status,
     status_after: wf.status, // unverändert
     task_name: task_name || '',
-    created_by: created_by || 'Mitarbeiter',
+    created_by: created_by || author_name || 'Mitarbeiter',
+    author_id: author_id || undefined,
+    author_name: (typeof author_name === 'string' && author_name.trim()) ? author_name.trim() : undefined,
     display_time,
     display_date,
   });

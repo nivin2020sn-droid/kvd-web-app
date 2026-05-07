@@ -38,6 +38,12 @@ export interface WorkflowEvent {
   corrections?: Array<{ target_type: EventType; index: number; old_ts: string; new_ts: string; new_display_time?: string; new_display_date?: string }>;
   created_by?: string;
   persons?: string[]; // snapshot of task.person_ids at the time of this event
+  // ----- Author attribution (Mitarbeiter who recorded this event) -----
+  // Stored as STRUCTURED fields (not embedded in note text) so display
+  // is always consistent and can never be lost / mis-parsed.
+  author_id?: string;
+  author_name?: string;
+  // -----
   // Plain-text values for MANUAL entries (Timeline, Admin-Zeitkorrektur). When
   // these are set, the UI/print/PDF MUST use them directly and NEVER convert
   // from `ts` (to avoid any timezone drift between server/client browsers).
@@ -103,6 +109,7 @@ function applyEventLocal(
   note: string,
   task_name: string,
   personsSnapshot?: string[],
+  author?: { id?: string; name?: string },
 ): TaskWorkflow {
   const wf = getWorkflow(task_id);
   const before = wf.status;
@@ -162,6 +169,8 @@ function applyEventLocal(
     status_after: after,
     task_name,
     persons: personsSnapshot && personsSnapshot.length ? [...personsSnapshot] : undefined,
+    author_id: author?.id || undefined,
+    author_name: author?.name || undefined,
   });
   saveWorkflow(wf);
   return wf;
@@ -169,53 +178,25 @@ function applyEventLocal(
 
 /** Apply an event. Online → POST to server (server broadcasts via WS). Offline → local only.
  *
- * If a Mitarbeiter is logged in (sessionStorage), their name is automatically
- * injected into the note so every action in the timeline is attributed.
+ * Author attribution is STRUCTURED:
+ *   - The note text stays exactly what the user typed (no name embedded).
+ *   - The Mitarbeiter's id+name is added as separate `author_id` / `author_name`
+ *     fields on the event so display logic can render them consistently.
  *
- * Format for status-changing events (vorbereiten/starten/pause/fortsetzen/
- *   beenden/feierabend):
- *     `Bahaa hat den Status auf "Beendet" geändert`
- *     (+ ` — <user note>` if the user typed an additional note).
- *
- * Format for plain notes (timeline / no status change):
- *     `Bahaa: <note>`
+ * If a Mitarbeiter is logged in (sessionStorage), `author_id` and `author_name`
+ * are filled automatically. If no Mitarbeiter is logged in (e.g. Admin acting
+ * directly), the event is recorded without author attribution.
  */
-function getCurrentMitarbeiterName(): string {
+function getCurrentMitarbeiterIdentity(): { id?: string; name?: string } {
   try {
     const raw = typeof sessionStorage !== "undefined" ? sessionStorage.getItem("current_mitarbeiter") : null;
-    if (!raw) return "";
+    if (!raw) return {};
     const j = JSON.parse(raw);
-    if (j && typeof j.name === "string") return j.name.trim();
+    if (j && typeof j.id === "string" && typeof j.name === "string") {
+      return { id: j.id, name: j.name.trim() };
+    }
   } catch {}
-  return "";
-}
-
-/** Pre-compute the resulting status for a status-changing event WITHOUT
- *  mutating any state. Used to build the localized "auf X geändert" string. */
-function previewStatusAfter(type: EventType): WorkflowStatus | null {
-  switch (type) {
-    case "vorbereiten": return "prepared";
-    case "starten":     return "running";
-    case "pause":       return "paused";
-    case "fortsetzen":  return "running";
-    case "beenden":     return "finished";
-    case "feierabend":  return "deferred";
-    default:            return null;
-  }
-}
-
-/** Build the auto-attributed note for a status-changing event. */
-function buildAttributedNote(name: string, type: EventType, userNote: string): string {
-  const trimmed = (userNote || "").trim();
-  if (!name) return trimmed;
-  const after = previewStatusAfter(type);
-  if (!after) {
-    // Non-status event (shouldn't happen here) → fallback to name: note.
-    return trimmed ? `${name}: ${trimmed}` : name;
-  }
-  const statusLabel = STATUS_LABEL_DE[after];
-  const base = `${name} hat den Status auf „${statusLabel}" geändert`;
-  return trimmed ? `${base} — ${trimmed}` : base;
+  return {};
 }
 
 export async function recordEvent(
@@ -225,16 +206,33 @@ export async function recordEvent(
   task_name: string,
   personsSnapshot?: string[],
 ): Promise<TaskWorkflow> {
-  const me = getCurrentMitarbeiterName();
-  const finalNote = buildAttributedNote(me, type, note);
-  // Optimistic local update for instant UI feedback
-  const optimistic = applyEventLocal(task_id, type, finalNote, task_name, personsSnapshot);
+  const me = getCurrentMitarbeiterIdentity();
+  const cleanNote = (note || "").trim();
+  // Optimistic local update for instant UI feedback (with structured author)
+  const optimistic = applyEventLocal(task_id, type, cleanNote, task_name, personsSnapshot, me);
   if (loadServerConfig()) {
     try {
       const serverWf = await api<TaskWorkflow>(`/workflows/${task_id}/event`, {
         method: "POST",
-        body: { type, note: finalNote, task_name, actor: me || undefined },
+        body: {
+          type,
+          note: cleanNote,
+          task_name,
+          actor: me.name || undefined,
+          author_id: me.id || undefined,
+          author_name: me.name || undefined,
+        },
       });
+      // Defensive merge: if backend hasn't been redeployed yet, the latest
+      // event in the server response may not yet carry author_id/author_name.
+      // We patch it from our optimistic record so the UI always shows the name.
+      try {
+        if (serverWf?.events?.length) {
+          const lastSrv = serverWf.events[serverWf.events.length - 1];
+          if (!lastSrv.author_name && me.name) lastSrv.author_name = me.name;
+          if (!lastSrv.author_id && me.id) lastSrv.author_id = me.id;
+        }
+      } catch {}
       saveWorkflow(serverWf);
       return serverWf;
     } catch {
@@ -382,8 +380,13 @@ export async function adminUndoFinish(
 
 /** Add a Timeline entry (employee-only, neutral informational).
  *  Does NOT change state/segments/Arbeitszeit.
- *  Auto-attribution: prepends the logged-in Mitarbeiter's name as
- *    `Bahaa: <note>` and uses it as `created_by`. */
+ *
+ *  Author attribution is STRUCTURED (separate fields, never embedded in text):
+ *    - `author_id` / `author_name` are auto-filled from the logged-in
+ *       Mitarbeiter session.
+ *    - `note` stays exactly the user's text (no name prefix).
+ *    - `created_by` is set to the Mitarbeiter name for legacy compatibility.
+ */
 export async function addTimelineEntry(
   task_id: string,
   time: string,        // "HH:MM"
@@ -393,19 +396,32 @@ export async function addTimelineEntry(
 ): Promise<TaskWorkflow> {
   const m = /^(\d{2}):(\d{2})$/.exec(time);
   if (!m) throw new Error("time muss HH:MM sein");
-  const me = getCurrentMitarbeiterName();
-  const trimmed = (note || "").trim();
-  const finalNote = me
-    ? (trimmed ? `${me}: ${trimmed}` : me)
-    : trimmed;
-  const created_by = createdByOverride || me || "Mitarbeiter";
+  const me = getCurrentMitarbeiterIdentity();
+  const cleanNote = (note || "").trim();
+  const created_by = createdByOverride || me.name || "Mitarbeiter";
   // Today's date in Europe/Berlin as YYYY-MM-DD (independent of viewer's TZ)
   const todayISO = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
   if (loadServerConfig()) {
     const res = await api<TaskWorkflow>(`/workflows/${task_id}/timeline`, {
       method: "POST",
-      body: { time, date: todayISO, note: finalNote, task_name, created_by },
+      body: {
+        time,
+        date: todayISO,
+        note: cleanNote,
+        task_name,
+        created_by,
+        author_id: me.id || undefined,
+        author_name: me.name || undefined,
+      },
     });
+    // Defensive merge for older (un-redeployed) backends.
+    try {
+      if (res?.events?.length) {
+        const lastSrv = res.events[res.events.length - 1];
+        if (!lastSrv.author_name && me.name) lastSrv.author_name = me.name;
+        if (!lastSrv.author_id && me.id) lastSrv.author_id = me.id;
+      }
+    } catch {}
     saveWorkflow(res);
     return res;
   }
@@ -418,11 +434,13 @@ export async function addTimelineEntry(
   wf.events.push({
     type: "timeline",
     ts,
-    note: finalNote,
+    note: cleanNote,
     status_before: wf.status,
     status_after: wf.status,
     task_name,
     created_by,
+    author_id: me.id || undefined,
+    author_name: me.name || undefined,
     display_time: time,      // <— plain-text, as entered
     display_date: todayISO,  // <— plain-text YYYY-MM-DD
   });
@@ -613,6 +631,35 @@ export const EVENT_LABEL: Record<EventType, string> = {
   admin_beenden_rueckgaengig: "Admin · Beenden rückgängig",
   timeline: "Timeline",
 };
+
+const STATUS_EVENT_TYPES: Set<EventType> = new Set([
+  "vorbereiten", "starten", "pause", "fortsetzen", "beenden", "feierabend",
+]);
+
+/** Pure-display: format the user-facing note for an event.
+ *  Combines the structured `author_name` with the raw `note` so the UI/print
+ *  always shows "Bahaa: <text>" (or the localized "hat den Status auf X
+ *  geändert" for status events). Old events that lack `author_name` fall
+ *  back to whatever was originally stored in `note`. */
+export function formatEventNote(ev: WorkflowEvent): string {
+  const note = (ev?.note || "").trim();
+  const author = (ev?.author_name || "").trim();
+  if (!ev) return "";
+
+  // ----- Old data without structured author: keep as-is. -----
+  if (!author) return note;
+
+  // ----- Status-changing events (Vorbereiten / Starten / Pause / Fortsetzen
+  //       / Beenden / Feierabend) -----
+  if (STATUS_EVENT_TYPES.has(ev.type)) {
+    const statusLabel = STATUS_LABEL_DE[ev.status_after] || EVENT_LABEL[ev.type];
+    const base = `${author} hat den Status auf „${statusLabel}" geändert`;
+    return note ? `${base} — ${note}` : base;
+  }
+
+  // ----- Timeline / everything else: "Bahaa: <text>" or just "Bahaa" -----
+  return note ? `${author}: ${note}` : author;
+}
 
 export const EVENT_COLOR: Record<EventType, string> = {
   vorbereiten: "#A855F7", // lila

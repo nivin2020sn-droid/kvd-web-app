@@ -25,6 +25,7 @@ import {
   buildDailyBreakdown,
   eventDisplayTime,
   eventDisplayDate,
+  formatEventNote,
 } from "./lib/workflow";
 import type { EventType, TaskWorkflow, WorkflowStatus, WorkflowEvent, DaySection } from "./lib/workflow";
 import { adminCorrectTimes, adminUndoFinish, addTimelineEntry } from "./lib/workflow";
@@ -950,11 +951,14 @@ function EventHistoryList({ events, dark = true, max = 50 }: { events: WorkflowE
                   {undone && <span className="text-[10px] font-bold text-brand-yellow">(zurückgenommen)</span>}
                   <span className="text-[10px] font-mono opacity-70" style={{ color: dark ? "#fff" : "#000" }}>{eventDisplayDate(ev)} · {eventDisplayTime(ev, { withSeconds: true })}</span>
                 </div>
-                {ev.note ? (
-                  <div className="text-xs italic mt-0.5" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>„{ev.note}"</div>
-                ) : (
-                  <div className="text-[10px] italic opacity-40" style={{ color: dark ? "#fff" : "#000" }}>(keine Notiz)</div>
-                )}
+                {(() => {
+                  const display = formatEventNote(ev);
+                  return display ? (
+                    <div className="text-xs italic mt-0.5" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>„{display}"</div>
+                  ) : (
+                    <div className="text-[10px] italic opacity-40" style={{ color: dark ? "#fff" : "#000" }}>(keine Notiz)</div>
+                  );
+                })()}
                 {isAdminEvent && ev.corrections && ev.corrections.length > 0 && (
                   <div className="mt-1 space-y-0.5">
                     {ev.corrections.map((co, k) => (
@@ -1051,11 +1055,14 @@ function DailyBreakdownView({ wf, persons, dark = true }: { wf: TaskWorkflow; pe
                         {undone && <span className="text-[10px] font-bold text-brand-yellow">(zurückgenommen)</span>}
                         <span className="text-[10px] font-mono opacity-70" style={{ color: txt }}>{eventDisplayTime(ev, { withSeconds: true })}</span>
                       </div>
-                      {ev.note ? (
-                        <div className="text-xs italic mt-0.5" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>„{ev.note}"</div>
-                      ) : (
-                        <div className="text-[10px] italic opacity-40" style={{ color: txt }}>(keine Notiz)</div>
-                      )}
+                      {(() => {
+                        const display = formatEventNote(ev);
+                        return display ? (
+                          <div className="text-xs italic mt-0.5" style={{ color: c, textDecoration: undone ? "line-through" : "none" }}>„{display}"</div>
+                        ) : (
+                          <div className="text-[10px] italic opacity-40" style={{ color: txt }}>(keine Notiz)</div>
+                        );
+                      })()}
                     </div>
                   </div>
                 );
