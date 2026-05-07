@@ -35,6 +35,7 @@ import {
   BestellungHome, BestellungEdit, BestellungDetail,
   BestellungArchive, BestellungArchiveMonth,
 } from "./components/BestellungViews";
+import { MitarbeiterLogin, getCurrentMitarbeiter, setCurrentMitarbeiter } from "./components/MitarbeiterLogin";
 import { installOfflineSync } from "./lib/photos";
 import { useAdminName, setAdminName } from "./lib/adminName";
 import { useAdminTheme, setAdminTheme, resolveBg, isDark as isDarkHex } from "./lib/adminTheme";
@@ -64,7 +65,8 @@ export default function App() {
       <Route path="/admin/manage" element={<AdminManage />} />
       <Route path="/admin/settings" element={<AdminSettings />} />
       <Route path="/admin/server" element={<AdminServer />} />
-      <Route path="/tablet" element={<Tablet />} />
+      <Route path="/tablet" element={<TabletGate />} />
+      <Route path="/mitarbeiter/login" element={<MitarbeiterLogin />} />
       <Route path="/lager" element={<ComingSoonPage title="LAGER" subtitle="Bestände · Material · Verbrauch" iconKey="box" color="#A78BFA" />} />
       <Route path="/bestellung" element={<BestellungHome />} />
       <Route path="/bestellung/neu" element={<BestellungEdit />} />
@@ -1304,18 +1306,48 @@ const AddModal = ({ label, value, setValue, onCancel, onSubmit }: any) => (
 // ============ Admin Manage ============
 function AdminManage() {
   const nav = useNavigate();
-  const KINDS = [{ key: "task-types", label: "Aufgabentypen" }, { key: "houses", label: "Häuser" }, { key: "stations", label: "Stationen" }, { key: "persons", label: "Personen" }];
-  const [data, setData] = useState<Record<string, SimpleItem[]>>({});
+  const KINDS = [{ key: "task-types", label: "Aufgabentypen" }, { key: "houses", label: "Häuser" }, { key: "stations", label: "Stationen" }, { key: "persons", label: "Mitarbeiter" }];
+  const [data, setData] = useState<Record<string, any[]>>({});
   const [adding, setAdding] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [editPerson, setEditPerson] = useState<{ id: string; name: string; has_pin?: boolean } | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editPin, setEditPin] = useState("");
+  const [editClearPin, setEditClearPin] = useState(false);
   const load = async () => {
-    const r: Record<string, SimpleItem[]> = {};
-    for (const k of KINDS) r[k.key] = await api<SimpleItem[]>(`/${k.key}`);
+    const r: Record<string, any[]> = {};
+    for (const k of KINDS) r[k.key] = await api<any[]>(`/${k.key}`);
     setData(r);
   };
   useEffect(() => { load(); }, []);
-  const add = async () => { if (!adding || !newName.trim()) return; try { await api(`/${adding}`, { method: "POST", body: { name: newName.trim() }, auth: true }); setNewName(""); setAdding(null); load(); } catch (e: any) { alert(e?.message); } };
-  const del = async (k: string, i: SimpleItem) => { if (!confirm(`"${i.name}" löschen?`)) return; await api(`/${k}/${i.id}`, { method: "DELETE", auth: true }); load(); };
+  const add = async () => {
+    if (!adding || !newName.trim()) return;
+    try {
+      const body: any = { name: newName.trim() };
+      if (adding === "persons" && newPin.trim()) {
+        if (!/^\d{4}$/.test(newPin.trim())) { alert("PIN muss aus 4 Ziffern bestehen"); return; }
+        body.pin = newPin.trim();
+      }
+      await api(`/${adding}`, { method: "POST", body, auth: true });
+      setNewName(""); setNewPin(""); setAdding(null); load();
+    } catch (e: any) { alert(e?.message); }
+  };
+  const del = async (k: string, i: any) => { if (!confirm(`"${i.name}" löschen?`)) return; await api(`/${k}/${i.id}`, { method: "DELETE", auth: true }); load(); };
+  const savePerson = async () => {
+    if (!editPerson) return;
+    try {
+      const body: any = { name: editName.trim() };
+      if (editClearPin) body.pin = "";
+      else if (editPin.trim()) {
+        if (!/^\d{4}$/.test(editPin.trim())) { alert("PIN muss aus 4 Ziffern bestehen"); return; }
+        body.pin = editPin.trim();
+      }
+      await api(`/persons/${editPerson.id}`, { method: "PUT", auth: true, body });
+      setEditPerson(null); setEditName(""); setEditPin(""); setEditClearPin(false);
+      load();
+    } catch (e: any) { alert(e?.message); }
+  };
   return (
     <div className="min-h-full">
       <div className="flex items-center justify-between p-4 border-b border-surface-border">
@@ -1328,21 +1360,90 @@ function AdminManage() {
           <div key={k.key}>
             <div className="flex justify-between items-center mb-2">
               <div className="section-label">{k.label}</div>
-              <button onClick={() => setAdding(k.key)} className="chip-add"><Icon d={ICONS.plus} size={14} color="#FFD600" /> Add</button>
+              <button onClick={() => { setAdding(k.key); setNewName(""); setNewPin(""); }} className="chip-add"><Icon d={ICONS.plus} size={14} color="#FFD600" /> Add</button>
             </div>
             <div className="space-y-0.5">
               {(data[k.key] || []).length === 0 && <div className="text-white/50 italic p-3">Keine Einträge</div>}
               {(data[k.key] || []).map((i) => (
-                <div key={i.id} className="bg-surface-card border border-surface-border px-4 py-3.5 flex justify-between items-center">
-                  <div className="font-semibold">{i.name}</div>
-                  <button onClick={() => del(k.key, i)}><Icon d={ICONS.close} size={20} color="#71717a" /></button>
+                <div key={i.id} className="bg-surface-card border border-surface-border px-4 py-3.5 flex justify-between items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold truncate">{i.name}</div>
+                    {k.key === "persons" && (
+                      <div className="text-[10px] mt-0.5 tracking-wider opacity-60 uppercase">
+                        {i.has_pin ? "🔒 PIN gesetzt" : "Kein PIN — offene Anmeldung"}
+                      </div>
+                    )}
+                  </div>
+                  {k.key === "persons" ? (
+                    <>
+                      <button
+                        onClick={() => { setEditPerson(i); setEditName(i.name); setEditPin(""); setEditClearPin(false); }}
+                        className="px-2 py-1 text-[11px] font-bold rounded border border-brand-yellow/60 text-brand-yellow active:scale-95"
+                      >Bearbeiten</button>
+                      <button onClick={() => del(k.key, i)}><Icon d={ICONS.close} size={20} color="#71717a" /></button>
+                    </>
+                  ) : (
+                    <button onClick={() => del(k.key, i)}><Icon d={ICONS.close} size={20} color="#71717a" /></button>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         ))}
       </div>
-      {adding && <AddModal label="Eintrag" value={newName} setValue={setNewName} onCancel={() => { setAdding(null); setNewName(""); }} onSubmit={add} />}
+      {adding && (
+        <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-5">
+          <div className="w-full max-w-sm rounded-2xl p-5 space-y-3" style={{ backgroundColor: "rgba(24,24,28,0.98)", border: "2px solid #FFD600" }}>
+            <div className="text-lg font-black">Neuer Eintrag</div>
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name" className="input-base" autoFocus />
+            {adding === "persons" && (
+              <>
+                <input
+                  type="text" inputMode="numeric" pattern="\d*" maxLength={4}
+                  value={newPin}
+                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  placeholder="PIN (4 Ziffern, optional)"
+                  className="input-base font-mono tracking-[8px] text-center"
+                />
+                <div className="text-[10px] opacity-60 px-1">
+                  Ohne PIN: offene Anmeldung. Mit PIN: 4 Ziffern erforderlich beim Login.
+                </div>
+              </>
+            )}
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => { setAdding(null); setNewName(""); setNewPin(""); }} className="flex-1 h-11 rounded-xl border-2 border-white/15 bg-white/5 font-black tracking-wide active:scale-95">Abbrechen</button>
+              <button onClick={add} className="flex-1 h-11 rounded-xl bg-brand-yellow text-black font-black tracking-wide active:scale-95">Hinzufügen</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {editPerson && (
+        <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-5">
+          <div className="w-full max-w-sm rounded-2xl p-5 space-y-3" style={{ backgroundColor: "rgba(24,24,28,0.98)", border: "2px solid #FFD600" }}>
+            <div className="text-xs font-bold tracking-widest uppercase opacity-60">Mitarbeiter bearbeiten</div>
+            <input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Name" className="input-base" autoFocus />
+            <div>
+              <label className="section-label">PIN</label>
+              <input
+                type="text" inputMode="numeric" pattern="\d*" maxLength={4}
+                value={editPin}
+                disabled={editClearPin}
+                onChange={(e) => setEditPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                placeholder={editPerson.has_pin ? "Neuer PIN (leer = unverändert)" : "PIN setzen"}
+                className="input-base font-mono tracking-[8px] text-center mt-2 disabled:opacity-40"
+              />
+              <label className="flex items-center gap-2 mt-2 text-xs">
+                <input type="checkbox" checked={editClearPin} onChange={(e) => setEditClearPin(e.target.checked)} />
+                <span>PIN entfernen (offene Anmeldung)</span>
+              </label>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => { setEditPerson(null); }} className="flex-1 h-11 rounded-xl border-2 border-white/15 bg-white/5 font-black tracking-wide active:scale-95">Abbrechen</button>
+              <button onClick={savePerson} className="flex-1 h-11 rounded-xl bg-brand-yellow text-black font-black tracking-wide active:scale-95">Speichern</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1814,6 +1915,15 @@ function AdminServer() {
   );
 }
 
+// ============ Tablet Gate ============
+// Wenn ein Mitarbeiter angemeldet ist → zeige Tablet (gefiltert).
+// Sonst → leite zum Login weiter.
+function TabletGate() {
+  const m = getCurrentMitarbeiter();
+  if (!m) return <MitarbeiterLogin />;
+  return <Tablet />;
+}
+
 // ============ Tablet ============
 function Tablet() {
   const nav = useNavigate();
@@ -1907,10 +2017,14 @@ function Tablet() {
           ? api<Task[]>(`/tasks/by-date?date=${tomorrowISO()}`).catch(() => [])
           : Promise.resolve([]),
       ]);
-      setTasks(Array.isArray(t) ? t : []);
+      // Filter: if a Mitarbeiter is logged in, only show tasks containing them in person_ids.
+      const me = getCurrentMitarbeiter();
+      const filterMine = (arr: Task[]) =>
+        me ? arr.filter((task) => Array.isArray(task.person_ids) && task.person_ids.includes(me.id)) : arr;
+      setTasks(Array.isArray(t) ? filterMine(t) : []);
       setPersons(p); setS(st);
       setWorkflows(wfMap);
-      setTomorrowTasks(Array.isArray(tmw) ? tmw : []);
+      setTomorrowTasks(Array.isArray(tmw) ? filterMine(tmw) : []);
     } catch {} finally { setLoading(false); }
   };
   useEffect(() => {
@@ -2071,6 +2185,22 @@ function Tablet() {
                 : { borderColor: dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)", backgroundColor: dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", color: textMuted }}
             >MORGEN</button>
           </div>
+          {(() => {
+            const me = getCurrentMitarbeiter();
+            if (!me) return null;
+            return (
+              <div className="flex items-center gap-2 px-1 pt-1">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border" style={{ borderColor: "#00E67644", backgroundColor: "#00E6761A", color: "#00E676" }}>
+                  <span className="w-1.5 h-1.5 rounded-full bg-brand-green" />
+                  <span className="text-xs font-black">{me.name}</span>
+                </div>
+                <button
+                  onClick={() => { setCurrentMitarbeiter(null); window.location.assign("/tablet"); }}
+                  className="ml-auto text-xs font-bold opacity-60 active:opacity-100 px-2 py-1"
+                >Wechseln</button>
+              </div>
+            );
+          })()}
         </div>
         <div className="p-4 space-y-3.5 pb-10">
           {loading ? <div className="flex justify-center mt-12"><Spin /></div> : tasks.length === 0 ? (

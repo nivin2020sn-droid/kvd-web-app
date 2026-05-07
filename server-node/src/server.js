@@ -77,7 +77,17 @@ const SimpleItemSchema = new mongoose.Schema({
 const TaskTypeModel = mongoose.model('TaskType', SimpleItemSchema, 'task_types');
 const HouseModel    = mongoose.model('House',    SimpleItemSchema, 'houses');
 const StationModel  = mongoose.model('Station',  SimpleItemSchema, 'stations');
-const PersonModel   = mongoose.model('Person',   SimpleItemSchema, 'persons');
+
+// Person schema extends SimpleItem with an optional PIN (4 digits) used to
+// "log in" as that Mitarbeiter on the Tablet. Stored in plaintext deliberately
+// — this is a low-stakes shared-tablet PIN, not a real password. Filtered out
+// of the public list endpoint (only verify endpoint reads it).
+const PersonSchema = new mongoose.Schema({
+  id: { type: String, default: uuidv4 },
+  name: String,
+  pin: { type: String, default: '' },  // "1234"  (empty = no PIN required)
+}, { versionKey: false });
+const PersonModel = mongoose.model('Person', PersonSchema, 'persons');
 
 const TaskSchema = new mongoose.Schema({
   id: { type: String, default: uuidv4, unique: true },
@@ -267,7 +277,63 @@ function mountKind(kind) {
     res.json({ ok: true });
   });
 }
-for (const kind of Object.keys(KIND_MODEL)) mountKind(kind);
+for (const kind of Object.keys(KIND_MODEL)) {
+  if (kind === 'persons') continue;  // Persons get custom routes (PIN handling)
+  mountKind(kind);
+}
+
+// =================== PERSONS (Mitarbeiter) — with PIN support ===================
+// Public list does NOT expose the PIN. Admin gets has_pin boolean for UI hints.
+router.get('/persons', async (req, res) => {
+  const isAdmin = req.headers.authorization === `Bearer ${ADMIN_TOKEN}`;
+  const all = await PersonModel.find({}, { _id: 0 }).lean();
+  if (isAdmin) {
+    res.json(all.map(p => ({ id: p.id, name: p.name, has_pin: !!(p.pin && p.pin.length) })));
+  } else {
+    res.json(all.map(p => ({ id: p.id, name: p.name, has_pin: !!(p.pin && p.pin.length) })));
+  }
+});
+router.post('/persons', requireAdmin, async (req, res) => {
+  const name = (req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ detail: 'Name erforderlich' });
+  const pin = String(req.body?.pin || '').trim();
+  if (pin && !/^\d{4}$/.test(pin)) return res.status(400).json({ detail: 'PIN muss 4 Ziffern sein' });
+  const doc = await PersonModel.create({ id: uuidv4(), name, pin });
+  broadcast({ type: 'persons_updated' });
+  res.json({ id: doc.id, name: doc.name, has_pin: !!doc.pin });
+});
+router.put('/persons/:id', requireAdmin, async (req, res) => {
+  const update = {};
+  if (typeof req.body?.name === 'string' && req.body.name.trim()) update.name = req.body.name.trim();
+  if (req.body?.pin !== undefined) {
+    const pin = String(req.body.pin || '').trim();
+    if (pin && !/^\d{4}$/.test(pin)) return res.status(400).json({ detail: 'PIN muss 4 Ziffern sein' });
+    update.pin = pin;  // empty string = clear PIN
+  }
+  const r = await PersonModel.findOneAndUpdate({ id: req.params.id }, { $set: update }, { new: true, projection: { _id: 0 } }).lean();
+  if (!r) return res.status(404).json({ detail: 'Mitarbeiter nicht gefunden' });
+  broadcast({ type: 'persons_updated' });
+  res.json({ id: r.id, name: r.name, has_pin: !!(r.pin && r.pin.length) });
+});
+router.delete('/persons/:id', requireAdmin, async (req, res) => {
+  await PersonModel.deleteOne({ id: req.params.id });
+  broadcast({ type: 'persons_updated' });
+  res.json({ ok: true });
+});
+
+// PIN verify — public (Tablet uses this to "log in" as a Mitarbeiter).
+// If the person has no PIN configured, accepts any/empty PIN (open access).
+router.post('/persons/:id/verify-pin', async (req, res) => {
+  const pin = String(req.body?.pin || '').trim();
+  const p = await PersonModel.findOne({ id: req.params.id }, { _id: 0, id: 1, name: 1, pin: 1 }).lean();
+  if (!p) return res.status(404).json({ ok: false, detail: 'Mitarbeiter nicht gefunden' });
+  if (!p.pin || !p.pin.length) {
+    // No PIN configured for this person → log in is allowed
+    return res.json({ ok: true, person: { id: p.id, name: p.name }, no_pin_required: true });
+  }
+  if (p.pin !== pin) return res.status(401).json({ ok: false, detail: 'Falscher Code' });
+  res.json({ ok: true, person: { id: p.id, name: p.name } });
+});
 
 // Tasks
 router.get('/tasks/today', async (req, res) => {

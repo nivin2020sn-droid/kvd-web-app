@@ -167,7 +167,20 @@ function applyEventLocal(
   return wf;
 }
 
-/** Apply an event. Online → POST to server (server broadcasts via WS). Offline → local only. */
+/** Apply an event. Online → POST to server (server broadcasts via WS). Offline → local only.
+ *
+ * If a Mitarbeiter is logged in (sessionStorage), their name is automatically
+ * prefixed onto the note so every action in the timeline is attributed.
+ */
+function getCurrentMitarbeiterName(): string {
+  try {
+    const raw = typeof sessionStorage !== "undefined" ? sessionStorage.getItem("current_mitarbeiter") : null;
+    if (!raw) return "";
+    const j = JSON.parse(raw);
+    if (j && typeof j.name === "string") return j.name.trim();
+  } catch {}
+  return "";
+}
 export async function recordEvent(
   task_id: string,
   type: EventType,
@@ -175,13 +188,19 @@ export async function recordEvent(
   task_name: string,
   personsSnapshot?: string[],
 ): Promise<TaskWorkflow> {
+  // Auto-attribute action to the logged-in Mitarbeiter.
+  // Format: "Herr Nasser: <user note>"  or just "Herr Nasser" if no note.
+  const me = getCurrentMitarbeiterName();
+  const finalNote = me
+    ? (note && note.trim() ? `${me}: ${note.trim()}` : me)
+    : note;
   // Optimistic local update for instant UI feedback
-  const optimistic = applyEventLocal(task_id, type, note, task_name, personsSnapshot);
+  const optimistic = applyEventLocal(task_id, type, finalNote, task_name, personsSnapshot);
   if (loadServerConfig()) {
     try {
       const serverWf = await api<TaskWorkflow>(`/workflows/${task_id}/event`, {
         method: "POST",
-        body: { type, note, task_name },
+        body: { type, note: finalNote, task_name, actor: me || undefined },
       });
       saveWorkflow(serverWf);
       return serverWf;
