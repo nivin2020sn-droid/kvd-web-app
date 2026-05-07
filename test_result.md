@@ -305,3 +305,21 @@ agent_communication:
       All UI text in German, Glassmorphism design preserved. Default mode is offline (localStorage).
       Discovered the user's Render backend at kvd-backend.onrender.com only exposes /api/health
       and /api/tasks (different schema) — incompatible with our app. Need user decision on backend.
+  - agent: "main"
+    message: |
+      Mitarbeiter system completion (P0):
+      - workflow.ts recordEvent now formats notes as
+        `Bahaa hat den Status auf „Beendet" geändert` for status events
+        (and appends ` — <user note>` if the user added one). For plain
+        timeline notes the format remains `Bahaa: <note>`.
+      - addTimelineEntry now auto-prefixes the Mitarbeiter name and uses it
+        as `created_by` (instead of the generic literal "Mitarbeiter").
+      - AdminCreate Personen field updated to make multi-select obvious:
+        section label shows `· MEHRFACHAUSWAHL` and a green pill
+        `N ausgewählt`; each chip carries a checkbox glyph; helper text
+        explains the behaviour.
+      - Tablet header already shows `Wechseln` action + green pill with
+        the logged-in employee name (kept as-is).
+      TypeScript compiles cleanly. Changes are frontend-only; the Node
+      backend already accepts `actor` and the new note format is just a
+      string, so no backend deploy is required.

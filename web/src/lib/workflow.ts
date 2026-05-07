@@ -170,7 +170,15 @@ function applyEventLocal(
 /** Apply an event. Online → POST to server (server broadcasts via WS). Offline → local only.
  *
  * If a Mitarbeiter is logged in (sessionStorage), their name is automatically
- * prefixed onto the note so every action in the timeline is attributed.
+ * injected into the note so every action in the timeline is attributed.
+ *
+ * Format for status-changing events (vorbereiten/starten/pause/fortsetzen/
+ *   beenden/feierabend):
+ *     `Bahaa hat den Status auf "Beendet" geändert`
+ *     (+ ` — <user note>` if the user typed an additional note).
+ *
+ * Format for plain notes (timeline / no status change):
+ *     `Bahaa: <note>`
  */
 function getCurrentMitarbeiterName(): string {
   try {
@@ -181,6 +189,35 @@ function getCurrentMitarbeiterName(): string {
   } catch {}
   return "";
 }
+
+/** Pre-compute the resulting status for a status-changing event WITHOUT
+ *  mutating any state. Used to build the localized "auf X geändert" string. */
+function previewStatusAfter(type: EventType): WorkflowStatus | null {
+  switch (type) {
+    case "vorbereiten": return "prepared";
+    case "starten":     return "running";
+    case "pause":       return "paused";
+    case "fortsetzen":  return "running";
+    case "beenden":     return "finished";
+    case "feierabend":  return "deferred";
+    default:            return null;
+  }
+}
+
+/** Build the auto-attributed note for a status-changing event. */
+function buildAttributedNote(name: string, type: EventType, userNote: string): string {
+  const trimmed = (userNote || "").trim();
+  if (!name) return trimmed;
+  const after = previewStatusAfter(type);
+  if (!after) {
+    // Non-status event (shouldn't happen here) → fallback to name: note.
+    return trimmed ? `${name}: ${trimmed}` : name;
+  }
+  const statusLabel = STATUS_LABEL_DE[after];
+  const base = `${name} hat den Status auf „${statusLabel}" geändert`;
+  return trimmed ? `${base} — ${trimmed}` : base;
+}
+
 export async function recordEvent(
   task_id: string,
   type: EventType,
@@ -188,12 +225,8 @@ export async function recordEvent(
   task_name: string,
   personsSnapshot?: string[],
 ): Promise<TaskWorkflow> {
-  // Auto-attribute action to the logged-in Mitarbeiter.
-  // Format: "Herr Nasser: <user note>"  or just "Herr Nasser" if no note.
   const me = getCurrentMitarbeiterName();
-  const finalNote = me
-    ? (note && note.trim() ? `${me}: ${note.trim()}` : me)
-    : note;
+  const finalNote = buildAttributedNote(me, type, note);
   // Optimistic local update for instant UI feedback
   const optimistic = applyEventLocal(task_id, type, finalNote, task_name, personsSnapshot);
   if (loadServerConfig()) {
@@ -348,22 +381,30 @@ export async function adminUndoFinish(
 }
 
 /** Add a Timeline entry (employee-only, neutral informational).
- *  Does NOT change state/segments/Arbeitszeit. */
+ *  Does NOT change state/segments/Arbeitszeit.
+ *  Auto-attribution: prepends the logged-in Mitarbeiter's name as
+ *    `Bahaa: <note>` and uses it as `created_by`. */
 export async function addTimelineEntry(
   task_id: string,
   time: string,        // "HH:MM"
   note: string,
   task_name: string,
-  created_by = "Mitarbeiter",
+  createdByOverride?: string,
 ): Promise<TaskWorkflow> {
   const m = /^(\d{2}):(\d{2})$/.exec(time);
   if (!m) throw new Error("time muss HH:MM sein");
+  const me = getCurrentMitarbeiterName();
+  const trimmed = (note || "").trim();
+  const finalNote = me
+    ? (trimmed ? `${me}: ${trimmed}` : me)
+    : trimmed;
+  const created_by = createdByOverride || me || "Mitarbeiter";
   // Today's date in Europe/Berlin as YYYY-MM-DD (independent of viewer's TZ)
   const todayISO = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
   if (loadServerConfig()) {
     const res = await api<TaskWorkflow>(`/workflows/${task_id}/timeline`, {
       method: "POST",
-      body: { time, date: todayISO, note, task_name, created_by },
+      body: { time, date: todayISO, note: finalNote, task_name, created_by },
     });
     saveWorkflow(res);
     return res;
@@ -377,7 +418,7 @@ export async function addTimelineEntry(
   wf.events.push({
     type: "timeline",
     ts,
-    note,
+    note: finalNote,
     status_before: wf.status,
     status_after: wf.status,
     task_name,

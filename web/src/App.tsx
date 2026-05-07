@@ -1228,11 +1228,50 @@ function AdminCreate() {
           <textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={3} placeholder="Optionale Beschreibung" className="input-base h-24 py-3 mt-2 resize-none" />
         </div>
         <div className="mb-5">
-          <label className="section-label">Personen</label>
+          <label className="section-label">
+            Personen
+            <span className="ml-2 text-[10px] font-bold opacity-60 tracking-widest">
+              · MEHRFACHAUSWAHL
+            </span>
+            {pids.length > 0 && (
+              <span
+                className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black tracking-wider"
+                style={{ backgroundColor: "#00E67622", color: "#00E676" }}
+              >
+                {pids.length} ausgewählt
+              </span>
+            )}
+          </label>
+          <div className="text-[11px] opacity-60 mt-1 leading-snug">
+            Tippen Sie auf einen Namen, um den Mitarbeiter hinzuzufügen oder zu entfernen.
+            Die Aufgabe erscheint auf den Tablets aller ausgewählten Mitarbeiter.
+          </div>
           <div className="flex flex-wrap gap-2 mt-2">
-            {pp.map((p) => (
-              <button key={p.id} type="button" onClick={() => setPids(pids.includes(p.id) ? pids.filter((x) => x !== p.id) : [...pids, p.id])} className={`chip ${pids.includes(p.id) ? "chip-active" : ""}`}>{p.name}</button>
-            ))}
+            {pp.map((p) => {
+              const active = pids.includes(p.id);
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPids(active ? pids.filter((x) => x !== p.id) : [...pids, p.id])}
+                  className={`chip flex items-center gap-1.5 ${active ? "chip-active" : ""}`}
+                  aria-pressed={active}
+                >
+                  <span
+                    className="inline-flex items-center justify-center w-4 h-4 rounded-sm border-2 text-[10px] font-black"
+                    style={{
+                      borderColor: active ? "#00E676" : "rgba(255,255,255,0.35)",
+                      backgroundColor: active ? "#00E676" : "transparent",
+                      color: active ? "#000" : "transparent",
+                      lineHeight: 1,
+                    }}
+                  >
+                    ✓
+                  </span>
+                  {p.name}
+                </button>
+              );
+            })}
             <button type="button" onClick={() => setAddFor({ kind: "persons", label: "Person" })} className="chip-add"><Icon d={ICONS.plus} size={14} color="#FFD600" /> Add</button>
           </div>
         </div>
