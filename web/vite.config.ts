@@ -7,10 +7,14 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["favicon.svg"],
+      includeAssets: [
+        "favicon.svg", "favicon.ico", "favicon-16.png", "favicon-32.png",
+        "apple-touch-icon.png", "apple-touch-icon-152.png", "apple-touch-icon-167.png",
+        "icon-192.png", "icon-512.png", "icon-192-maskable.png", "icon-512-maskable.png"
+      ],
       manifest: {
-        name: "Reinigung Aufgabenverwaltung",
-        short_name: "Reinigung",
+        name: "Do it",
+        short_name: "Do it",
         description: "Tägliche Reinigungsaufgaben verwalten",
         theme_color: "#0F0F0F",
         background_color: "#0F0F0F",
@@ -20,12 +24,18 @@ export default defineConfig({
         start_url: "/",
         lang: "de",
         icons: [
-          { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
-          { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
+          { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+          { src: "/icon-192-maskable.png", sizes: "192x192", type: "image/png", purpose: "maskable" },
           { src: "/icon-512-maskable.png", sizes: "512x512", type: "image/png", purpose: "maskable" }
         ]
       },
       workbox: {
+        // Force the new service worker to take over IMMEDIATELY so the old
+        // cached icons / manifest don't keep showing up after this update.
+        clientsClaim: true,
+        skipWaiting: true,
+        cleanupOutdatedCaches: true,
         globPatterns: ["**/*.{js,css,html,svg,png,ico,webp}"],
         runtimeCaching: [
           {
