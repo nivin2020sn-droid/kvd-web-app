@@ -4,7 +4,8 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 import { WebSocketServer } from 'ws';
 import http from 'http';
-import cron from 'node-cron';
+// node-cron removed: nightly auto-archive cron caused tasks to disappear at midnight.
+// Tage selbst dienen jetzt als natürliches Archiv.
 import { v4 as uuidv4 } from 'uuid';
 import { v2 as cloudinary } from 'cloudinary';
 import multer from 'multer';
@@ -349,6 +350,20 @@ router.get('/debug/lost-tasks', async (req, res) => {
     }
   }
   res.json(lost);
+});
+
+// GET endpoint as the user requested:
+// Returns the result of the last auto-heal run + ability to re-run via ?run=1.
+router.get('/debug/heal-tasks', async (req, res) => {
+  if (String(req.query.run || '').trim() === '1') {
+    await autoHealArchivedTasks();
+  }
+  res.json({
+    last_run: lastHealResult.ran_at,
+    restored_count: lastHealResult.restored_count,
+    restored: lastHealResult.restored,  // [{ id, task_type, task_date, archive_date, continue_tomorrow, next_work_date }]
+    note: 'Auto-Heal läuft automatisch beim Server-Start. Mit ?run=1 manuell erneut auslösen.',
+  });
 });
 
 // One-off cleanup endpoint: backfill missing task_date from created_at, fix
@@ -1126,15 +1141,30 @@ router.post('/workflows/:task_id/event', async (req, res) => {
   // (via the $or query), and also remain visible under its original task_date.
   if (type === 'feierabend' && taskDoc) {
     const nextDay = tomorrowStr(todayStr());
+    const before = {
+      task_date: taskDoc.task_date,
+      continue_tomorrow: !!taskDoc.continue_tomorrow,
+      next_work_date: taskDoc.next_work_date || null,
+      archived: !!taskDoc.archived,
+    };
     await TaskModel.updateOne(
       { id: req.params.task_id },
       { $set: { continue_tomorrow: true, next_work_date: nextDay } },
+    );
+    console.log(
+      `🌙 [feierabend] task=${taskDoc.id} type="${taskDoc.task_type}"` +
+      `  before=${JSON.stringify(before)}` +
+      `  after={ task_date: ${before.task_date}, continue_tomorrow: true, next_work_date: ${nextDay}, archived: false }`,
     );
     broadcast({ type: 'tasks_updated' });
   }
   // On Fortsetzen: if the task was marked to continue tomorrow, clear the flags
   // (the continuation has now happened, so it no longer needs to show on future days).
   if (type === 'fortsetzen' && taskDoc?.continue_tomorrow) {
+    console.log(
+      `▶ [fortsetzen] task=${taskDoc.id} type="${taskDoc.task_type}"` +
+      `  clearing continue_tomorrow (was ${taskDoc.next_work_date})`,
+    );
     await TaskModel.updateOne(
       { id: req.params.task_id },
       { $set: { continue_tomorrow: false, next_work_date: null } },
@@ -1295,15 +1325,74 @@ wss.on('connection', (ws) => {
   ws.on('error', () => { try { ws.close(); } catch {} });
 });
 
-// Auto-archive at midnight UTC
-cron.schedule('0 0 * * *', async () => {
-  try {
-    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-    const r = await TaskModel.updateMany({ archived: false }, { $set: { archived: true, archive_date: yesterday } });
-    broadcast({ type: 'tasks_updated' });
-    console.log(`🌙 Auto-archived ${r.modifiedCount} Aufgaben um Mitternacht`);
-  } catch (e) { console.error('Auto-archive Fehler', e); }
-}, { timezone: 'UTC' });
+// =====================================================================
+// Auto-archive ENTFERNT (war ein nächtlicher Cron-Job, der ALLE Aufgaben
+// pauschal archiviert hat — unabhängig von task_date / continue_tomorrow /
+// status). Das war die Ursache für verschwindende Aufgaben am Morgen.
+// Die Tage selbst dienen nun als natürliches Archiv. Aufgaben bleiben unter
+// ihrem task_date, bis Admin sie explizit endgültig löscht.
+// =====================================================================
+
+// =====================================================================
+// AUTO-HEAL — beim Server-Start einmalig ausführen.
+// Stellt ALLE fälschlich vom alten Cron archivierten Aufgaben wieder her.
+// Verändert NICHTS außer { archived, archive_date }:
+//   - task_date         → unangetastet
+//   - continue_tomorrow → unangetastet
+//   - next_work_date    → unangetastet
+//   - dailyWorkLog      → unangetastet
+//   - timeline / events → unangetastet
+//   - media / photos    → unangetastet
+//   - persons / notes   → unangetastet
+// Idempotent: läuft täglich beim Restart, bewirkt aber nichts wenn keine
+// archivierten Aufgaben mehr vorhanden sind.
+// =====================================================================
+let lastHealResult = { ran_at: null, restored_count: 0, restored: [] };
+async function autoHealArchivedTasks() {
+  const startedAt = new Date().toISOString();
+  const archivedTasks = await TaskModel.find(
+    { archived: true },
+    { _id: 0, id: 1, task_type: 1, task_date: 1, archive_date: 1, continue_tomorrow: 1, next_work_date: 1 },
+  ).lean();
+
+  if (archivedTasks.length === 0) {
+    console.log('🩹 Auto-Heal: keine archivierten Aufgaben gefunden — nichts zu tun.');
+    lastHealResult = { ran_at: startedAt, restored_count: 0, restored: [] };
+    return lastHealResult;
+  }
+
+  console.log(`🩹 Auto-Heal: ${archivedTasks.length} archivierte Aufgabe(n) gefunden — werden wiederhergestellt …`);
+  for (const t of archivedTasks) {
+    console.log(
+      `   ↻ id=${t.id}  type="${t.task_type || '—'}"  ` +
+      `task_date=${t.task_date || '—'}  archive_date=${t.archive_date || '—'}  ` +
+      `continue_tomorrow=${t.continue_tomorrow || false}  next_work_date=${t.next_work_date || '—'}`,
+    );
+  }
+
+  const r = await TaskModel.updateMany(
+    { archived: true },
+    { $set: { archived: false, archive_date: null } },
+  );
+  console.log(`✅ Auto-Heal abgeschlossen: ${r.modifiedCount} Aufgabe(n) wiederhergestellt.`);
+
+  lastHealResult = {
+    ran_at: startedAt,
+    restored_count: r.modifiedCount,
+    restored: archivedTasks.map((t) => ({
+      id: t.id,
+      task_type: t.task_type || null,
+      task_date: t.task_date || null,
+      archive_date: t.archive_date || null,
+      continue_tomorrow: !!t.continue_tomorrow,
+      next_work_date: t.next_work_date || null,
+    })),
+  };
+
+  // Notify all connected clients so UI refreshes immediately.
+  try { broadcast({ type: 'tasks_updated' }); } catch {}
+  return lastHealResult;
+}
 
 // ===== Seed defaults =====
 async function seedDefaults() {
@@ -1323,6 +1412,13 @@ async function seedDefaults() {
     await mongoose.connect(MONGO_URL, { dbName: DB_NAME });
     console.log('✅ MongoDB verbunden:', DB_NAME);
     await seedDefaults();
+    // Auto-heal: restores tasks that were wrongly archived by the old midnight cron.
+    // Idempotent — safe to run on every restart.
+    try {
+      await autoHealArchivedTasks();
+    } catch (e) {
+      console.error('⚠ Auto-Heal Fehler (non-fatal):', e?.message || e);
+    }
     server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Reinigung Backend läuft auf Port ${PORT}`));
   } catch (e) {
     console.error('Startfehler:', e);
