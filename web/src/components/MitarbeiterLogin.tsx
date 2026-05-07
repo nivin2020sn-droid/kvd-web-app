@@ -21,6 +21,26 @@ interface CurrentMitarbeiter { id: string; name: string }
 
 const MITARBEITER_KEY = "current_mitarbeiter";
 
+// ---- Reactive storage: every component that needs to know "is a Mitarbeiter
+// logged in?" can subscribe and gets a re-render the very moment the value
+// changes — without a full page reload. ----
+type Subscriber = (m: CurrentMitarbeiter | null) => void;
+const subscribers: Set<Subscriber> = new Set();
+function notifySubscribers(m: CurrentMitarbeiter | null) {
+  subscribers.forEach((fn) => {
+    try { fn(m); } catch {}
+  });
+  // Sync between tabs (storage events fire only in OTHER tabs, so we also
+  // dispatch our own 'mitarbeiter-changed' event for same-tab listeners).
+  try {
+    window.dispatchEvent(new CustomEvent("mitarbeiter-changed", { detail: m }));
+  } catch {}
+}
+export function subscribeMitarbeiter(fn: Subscriber): () => void {
+  subscribers.add(fn);
+  return () => { subscribers.delete(fn); };
+}
+
 export function getCurrentMitarbeiter(): CurrentMitarbeiter | null {
   try {
     const raw = sessionStorage.getItem(MITARBEITER_KEY);
@@ -32,9 +52,34 @@ export function getCurrentMitarbeiter(): CurrentMitarbeiter | null {
 }
 export function setCurrentMitarbeiter(m: CurrentMitarbeiter | null): void {
   try {
-    if (m) sessionStorage.setItem(MITARBEITER_KEY, JSON.stringify(m));
-    else sessionStorage.removeItem(MITARBEITER_KEY);
+    if (m) {
+      sessionStorage.setItem(MITARBEITER_KEY, JSON.stringify(m));
+    } else {
+      // Full cleanup — make sure no stale session lingers across tabs/storages.
+      sessionStorage.removeItem(MITARBEITER_KEY);
+      try { localStorage.removeItem(MITARBEITER_KEY); } catch {}
+    }
   } catch {}
+  // Notify React listeners immediately so any TabletGate / banner re-renders
+  // in the same tick — no page reload needed.
+  notifySubscribers(m);
+}
+
+/** Clear ALL Mitarbeiter session data (sessionStorage + localStorage + state).
+ *  Used by the "Wechseln / Abmelden" button so the next /tablet visit always
+ *  shows the "Wer arbeitet?" picker. */
+export function clearMitarbeiterSession(): void {
+  try { sessionStorage.removeItem(MITARBEITER_KEY); } catch {}
+  try { localStorage.removeItem(MITARBEITER_KEY); } catch {}
+  // Belt-and-braces: also remove any legacy keys that earlier versions of
+  // the app might have written.
+  try {
+    for (const k of ["mitarbeiter_id", "mitarbeiter_name", "employee_session", "employeeMode"]) {
+      sessionStorage.removeItem(k);
+      localStorage.removeItem(k);
+    }
+  } catch {}
+  notifySubscribers(null);
 }
 
 export function MitarbeiterLogin() {
@@ -81,8 +126,20 @@ export function MitarbeiterLogin() {
         setTimeout(() => pinRef.current?.focus(), 50);
         return;
       }
-      setCurrentMitarbeiter({ id: selected.id, name: selected.name });
-      nav(`/tablet?as=${encodeURIComponent(selected.id)}`);
+      // SUCCESS — apply state changes synchronously so the UI flips to Tablet
+      // immediately (no page reload, no "ghost login" requiring a refresh).
+      // Order matters: clear local modal state first, then commit the
+      // Mitarbeiter session — which fires the subscriber that re-renders
+      // TabletGate from <MitarbeiterLogin/> to <Tablet/> in the SAME tick.
+      const me = { id: selected.id, name: selected.name };
+      setSelected(null);
+      setPin("");
+      setErr("");
+      setSubmitting(false);
+      setCurrentMitarbeiter(me);
+      // Navigate (route stays /tablet, just adds ?as=<id> for traceability).
+      nav(`/tablet?as=${encodeURIComponent(me.id)}`, { replace: true });
+      return;
     } catch (e: any) {
       setErr("Verbindungsfehler: " + (e?.message || ""));
     } finally {

@@ -35,7 +35,7 @@ import {
   BestellungHome, BestellungEdit, BestellungDetail,
   BestellungArchive, BestellungArchiveMonth,
 } from "./components/BestellungViews";
-import { MitarbeiterLogin, getCurrentMitarbeiter, setCurrentMitarbeiter } from "./components/MitarbeiterLogin";
+import { MitarbeiterLogin, getCurrentMitarbeiter, subscribeMitarbeiter, clearMitarbeiterSession } from "./components/MitarbeiterLogin";
 import { installOfflineSync } from "./lib/photos";
 import { useAdminName, setAdminName } from "./lib/adminName";
 import { useAdminTheme, setAdminTheme, resolveBg, isDark as isDarkHex } from "./lib/adminTheme";
@@ -1958,8 +1958,21 @@ function AdminServer() {
 // Wenn ein Mitarbeiter angemeldet ist → zeige Tablet (gefiltert).
 // Sonst → leite zum Login weiter.
 function TabletGate() {
-  const m = getCurrentMitarbeiter();
-  if (!m) return <MitarbeiterLogin />;
+  // Reactive: re-render the moment a Mitarbeiter logs in or logs out, in
+  // ANY tick of ANY component (no page reload required).
+  const [me, setMe] = useState(getCurrentMitarbeiter);
+  useEffect(() => {
+    // Always re-sync on mount in case storage was changed elsewhere.
+    setMe(getCurrentMitarbeiter());
+    const unsub = subscribeMitarbeiter((next) => setMe(next));
+    // Cross-tab: respond to storage events from other tabs as well.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "current_mitarbeiter") setMe(getCurrentMitarbeiter());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => { unsub(); window.removeEventListener("storage", onStorage); };
+  }, []);
+  if (!me) return <MitarbeiterLogin />;
   return <Tablet />;
 }
 
@@ -2156,7 +2169,16 @@ function Tablet() {
         <div className="px-6 pt-5 pb-4 border-b border-white/10 space-y-3">
           <div className="flex items-center justify-between">
             {s?.logo_base64 ? <img src={s.logo_base64} alt="" className="w-14 h-14 object-contain" /> : <div className="w-14 h-14 border-2 border-current rounded-xl flex items-center justify-center font-black text-2xl" style={{ color: dark ? "#fff" : "#000" }}>R</div>}
-            <button onClick={() => nav("/")} className="p-2"><Icon d={ICONS.exit} size={22} color={textMuted} /></button>
+            <button
+              onClick={() => {
+                // Leaving the Tablet view = end Mitarbeiter session.
+                // Forces re-login next time someone enters /tablet.
+                clearMitarbeiterSession();
+                nav("/");
+              }}
+              className="p-2"
+              aria-label="Beenden und abmelden"
+            ><Icon d={ICONS.exit} size={22} color={textMuted} /></button>
           </div>
           <div className="flex items-baseline flex-wrap gap-5">
             <div className="text-3xl font-black tracking-[3px]" style={{ color: dark ? "#fff" : "#000" }}>
@@ -2234,9 +2256,20 @@ function Tablet() {
                   <span className="text-xs font-black">{me.name}</span>
                 </div>
                 <button
-                  onClick={() => { setCurrentMitarbeiter(null); window.location.assign("/tablet"); }}
-                  className="ml-auto text-xs font-bold opacity-60 active:opacity-100 px-2 py-1"
-                >Wechseln</button>
+                  onClick={() => {
+                    // Full session wipe + reactive re-render. No page reload.
+                    // TabletGate listens to subscribeMitarbeiter and switches
+                    // back to <MitarbeiterLogin/> in the same tick.
+                    clearMitarbeiterSession();
+                    nav("/tablet", { replace: true });
+                  }}
+                  className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border-2 font-black text-[11px] tracking-widest active:scale-95 transition"
+                  style={{ borderColor: "#FF6B6B", backgroundColor: "#FF6B6B1A", color: "#FF6B6B" }}
+                  aria-label="Mitarbeiter abmelden"
+                >
+                  <Icon d={ICONS.exit} size={14} color="#FF6B6B" />
+                  ABMELDEN
+                </button>
               </div>
             );
           })()}
