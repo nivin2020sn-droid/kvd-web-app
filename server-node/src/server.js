@@ -199,6 +199,9 @@ const LagerFolderSchema = new mongoose.Schema({
   parent_id: { type: String, default: null, index: true }, // null = root
   name: { type: String, required: true },
   sort_order: { type: Number, default: 0 },
+  image_url: { type: String, default: null },
+  image_thumbnail: { type: String, default: null },
+  image_public_id: { type: String, default: null },
   created_at: { type: String, default: () => new Date().toISOString() },
   updated_at: { type: String, default: () => new Date().toISOString() },
 }, { versionKey: false });
@@ -216,6 +219,9 @@ const LagerProductSchema = new mongoose.Schema({
   // Optional secondary unit  (e.g. 1 Stück = 5 Liter)
   inhalt_pro_stueck: { type: Number, default: null },
   zweite_einheit: { type: String, default: null },
+  // Minimum (Mindestmenge). Used to compute stock status: <0=critical,
+  // <min=low, ≥min=ok. 0 (default) means "no threshold defined".
+  minimum_quantity: { type: Number, default: 0 },
   info_text: { type: String, default: '' },
   warn_symbols: { type: [String], default: [] },     // e.g. ["ppe.gloves","ghs.flame"]
   created_at: { type: String, default: () => new Date().toISOString() },
@@ -1055,6 +1061,9 @@ router.post('/lager/folders', requireLagerSession, async (req, res) => {
     id: 'lf_' + Math.random().toString(36).slice(2, 11),
     name: name.trim(),
     parent_id: parent_id || null,
+    image_url: req.body.image_url || null,
+    image_thumbnail: req.body.image_thumbnail || null,
+    image_public_id: req.body.image_public_id || null,
   });
   res.json(f.toObject());
 });
@@ -1063,6 +1072,9 @@ router.patch('/lager/folders/:id', requireLagerSession, async (req, res) => {
   const updates = {};
   if (typeof req.body?.name === 'string') updates.name = req.body.name.trim();
   if (typeof req.body?.sort_order === 'number') updates.sort_order = req.body.sort_order;
+  if ('image_url' in (req.body || {})) updates.image_url = req.body.image_url || null;
+  if ('image_thumbnail' in (req.body || {})) updates.image_thumbnail = req.body.image_thumbnail || null;
+  if ('image_public_id' in (req.body || {})) updates.image_public_id = req.body.image_public_id || null;
   if (!Object.keys(updates).length) return res.status(400).json({ detail: 'Keine Änderungen' });
   updates.updated_at = new Date().toISOString();
   const f = await LagerFolderModel.findOneAndUpdate(
@@ -1082,9 +1094,43 @@ router.delete('/lager/folders/:id', requireLagerSession, async (req, res) => {
       subfolders: subCount, products: prodCount,
     });
   }
+  // Best-effort delete the folder's Cloudinary cover image.
+  const folder = await LagerFolderModel.findOne({ id: req.params.id }).lean();
+  if (folder?.image_public_id && CLOUDINARY_ENABLED) {
+    cloudinary.uploader.destroy(folder.image_public_id).catch(() => {});
+  }
   const r = await LagerFolderModel.deleteOne({ id: req.params.id });
   if (!r.deletedCount) return res.status(404).json({ detail: 'Ordner nicht gefunden' });
   res.json({ ok: true });
+});
+
+// Folder cover image upload (Cloudinary).
+router.post('/lager/folders/upload-image', upload.single('file'), async (req, res) => {
+  if (!CLOUDINARY_ENABLED) return res.status(503).json({ detail: 'Cloudinary nicht konfiguriert' });
+  if (!req.file?.buffer) return res.status(400).json({ detail: 'Keine Datei gesendet' });
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'lager/folders', resource_type: 'image', quality: 'auto:best', fetch_format: 'auto' },
+        (err, r) => err ? reject(err) : resolve(r),
+      );
+      stream.end(req.file.buffer);
+    });
+    const thumbnail = cloudinary.url(result.public_id, {
+      secure: true, width: 600, height: 600, crop: 'fill', gravity: 'auto',
+      quality: 'auto', fetch_format: 'auto',
+    });
+    res.json({
+      ok: true,
+      url: result.secure_url,
+      thumbnail,
+      public_id: result.public_id,
+      width: result.width, height: result.height,
+    });
+  } catch (err) {
+    console.error('[lager/folders/upload-image] Cloudinary error:', err?.message);
+    res.status(500).json({ detail: 'Upload fehlgeschlagen: ' + (err?.message || '') });
+  }
 });
 
 // ----- Products -----
@@ -1118,6 +1164,7 @@ router.post('/lager/products', requireLagerSession, async (req, res) => {
     einheit: req.body.einheit || 'Stück',
     inhalt_pro_stueck: req.body.inhalt_pro_stueck != null ? Number(req.body.inhalt_pro_stueck) : null,
     zweite_einheit: req.body.zweite_einheit || null,
+    minimum_quantity: Number(req.body.minimum_quantity) || 0,
     info_text: req.body.info_text || '',
     warn_symbols: Array.isArray(req.body.warn_symbols) ? req.body.warn_symbols : [],
   });
@@ -1127,7 +1174,7 @@ router.post('/lager/products', requireLagerSession, async (req, res) => {
 router.patch('/lager/products/:id', requireLagerSession, async (req, res) => {
   const allowed = ['name', 'image_url', 'image_thumbnail', 'image_public_id',
                    'menge', 'einheit', 'inhalt_pro_stueck', 'zweite_einheit',
-                   'info_text', 'warn_symbols', 'folder_id'];
+                   'minimum_quantity', 'info_text', 'warn_symbols', 'folder_id'];
   const updates = {};
   for (const k of allowed) if (k in (req.body || {})) updates[k] = req.body[k];
   if (!Object.keys(updates).length) return res.status(400).json({ detail: 'Keine Änderungen' });

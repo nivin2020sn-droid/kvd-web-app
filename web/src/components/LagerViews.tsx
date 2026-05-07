@@ -1,10 +1,11 @@
 // =====================================================================
-// LAGER (Inventory) — independent PIN-gated tree of folders & products
+// LAGER (Inventory) — independent PIN-gated tree of folders & products.
+// UI style: ONLINE-SHOP / Produktkatalog (square image cards in a
+// responsive grid, full names, no truncation, hover/glow effects).
 //
-// Routes: this entire module is mounted at /lager via <LagerGate />.
-// Internal navigation uses React state for the tree path (no separate
-// react-router routes) — keeps everything inside the existing layout
-// without changing the global Navigation.
+// Mounted at /lager via <LagerGate />. Internal navigation uses React
+// state (not router routes) — keeps everything inside the existing
+// Layout without changing global Navigation.
 // =====================================================================
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon, ICONS } from "./Icons";
@@ -13,7 +14,11 @@ import { loadServerConfig } from "../lib/serverConfig";
 import { WARN_SYMBOLS, WarnIcon, getWarnSymbol } from "./WarnSymbols";
 
 // ---------- Types ----------
-interface LagerFolder { id: string; parent_id: string | null; name: string; sort_order?: number; created_at: string }
+interface LagerFolder {
+  id: string; parent_id: string | null; name: string; sort_order?: number;
+  image_url?: string | null; image_thumbnail?: string | null; image_public_id?: string | null;
+  created_at: string;
+}
 interface LagerProduct {
   id: string;
   folder_id: string;
@@ -25,12 +30,32 @@ interface LagerProduct {
   einheit: string;
   inhalt_pro_stueck?: number | null;
   zweite_einheit?: string | null;
+  minimum_quantity?: number;
   info_text?: string;
   warn_symbols?: string[];
   created_at: string;
 }
 
 const PIN_KEY = "lager_session_v1";
+
+// ---------- Stock-status (Mindestmenge) ----------
+type StockStatus = "critical" | "low" | "ok" | "neutral";
+interface StockStyle { label: string; color: string; bg: string; ring: string; glow: string }
+
+function computeStock(p: LagerProduct): StockStatus {
+  const m = Number(p.menge) || 0;
+  const min = Number(p.minimum_quantity) || 0;
+  if (m <= 0) return "critical";
+  if (min > 0 && m < min) return "low";
+  if (min > 0) return "ok";
+  return "neutral";          // no minimum defined → neither good nor bad
+}
+const STOCK_STYLE: Record<StockStatus, StockStyle> = {
+  critical: { label: "Leer",    color: "#FF4D4F", bg: "#FF4D4F18", ring: "#FF4D4F",  glow: "0 0 0 1px #FF4D4F66, 0 0 24px -4px #FF4D4F88" },
+  low:      { label: "Niedrig", color: "#FF9F40", bg: "#FF9F4018", ring: "#FF9F40",  glow: "0 0 0 1px #FF9F4055, 0 0 18px -6px #FF9F4080" },
+  ok:       { label: "OK",      color: "#00E676", bg: "#00E67616", ring: "#00E67688", glow: "0 0 0 1px #00E67644, 0 0 16px -8px #00E67670" },
+  neutral:  { label: "",        color: "rgba(255,255,255,0.6)", bg: "transparent",  ring: "rgba(255,255,255,0.12)", glow: "none" },
+};
 
 // ---------- Session helpers ----------
 function readSession(): { pin_version: number } | null {
@@ -50,24 +75,18 @@ function writeSession(s: { pin_version: number } | null) {
   try { window.dispatchEvent(new CustomEvent("lager-session-changed", { detail: s })); } catch {}
 }
 
-// Wrapper around api() that auto-attaches the pin_version header AND
-// auto-clears the session when server replies 409 pin_changed.
 async function lagerApi<T = any>(path: string, opts: any = {}): Promise<T> {
   const sess = readSession();
   try {
     return await api<T>(path, { ...opts, lagerPv: sess?.pin_version });
   } catch (e: any) {
-    if (e?.status === 409 && /pin_changed/i.test(e?.message || "")) {
-      writeSession(null);
-    }
+    if (e?.status === 409 && /pin_changed/i.test(e?.message || "")) writeSession(null);
     throw e;
   }
 }
 
 // =====================================================================
-// LagerGate — top-level wrapper. Decides between PIN-prompt and the actual
-// LagerHome tree. Subscribes to session changes so PIN-revocation flips
-// the UI back to the prompt instantly.
+// LagerGate — top-level wrapper.
 // =====================================================================
 export function LagerGate() {
   const [sess, setSess] = useState(readSession);
@@ -75,7 +94,6 @@ export function LagerGate() {
     const onChange = () => setSess(readSession());
     window.addEventListener("lager-session-changed", onChange);
     window.addEventListener("storage", onChange);
-    // Re-validate session on mount in case the PIN was changed elsewhere.
     (async () => {
       try {
         const r = await api<{ pin_version: number }>("/lager/pin-version");
@@ -93,8 +111,7 @@ export function LagerGate() {
 }
 
 // =====================================================================
-// PIN screen — 4 to 6 digits. Auto-submits on 4 digits, but lets the user
-// continue typing up to 6 (only confirms on Enter / button if longer).
+// PIN screen
 // =====================================================================
 function LagerPinScreen() {
   const [pin, setPin] = useState("");
@@ -115,9 +132,7 @@ function LagerPinScreen() {
       setErr(e?.payload?.detail || "Falscher PIN");
       setPin("");
       setTimeout(() => inputRef.current?.focus(), 50);
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
 
   return (
@@ -142,26 +157,14 @@ function LagerPinScreen() {
             pattern="\d*"
             maxLength={6}
             value={pin}
-            onChange={(e) => {
-              const v = e.target.value.replace(/\D/g, "").slice(0, 6);
-              setPin(v);
-              setErr("");
-              // Auto-submit when user has typed exactly 4 digits AND there's a
-              // small idle pause. To stay simple we only auto-submit when we
-              // hit length 4 once (user can still backspace + type 5/6).
-              // Submit explicitly via button for >=5 digit PINs.
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && pin.length >= 4) submit(pin);
-            }}
+            onChange={(e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 6)); setErr(""); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && pin.length >= 4) submit(pin); }}
             className="w-full text-center text-3xl tracking-[16px] font-black bg-black/30 border-2 rounded-xl py-4 outline-none"
             style={{ borderColor: err ? "#FF6B6B" : "#A78BFA66", color: "#fff" }}
             placeholder="••••"
             autoComplete="off"
           />
-          {err ? (
-            <div className="mt-3 text-center text-[12px] font-bold" style={{ color: "#FF6B6B" }}>{err}</div>
-          ) : null}
+          {err ? <div className="mt-3 text-center text-[12px] font-bold" style={{ color: "#FF6B6B" }}>{err}</div> : null}
           <button
             disabled={pin.length < 4 || busy}
             onClick={() => submit(pin)}
@@ -175,8 +178,7 @@ function LagerPinScreen() {
 }
 
 // =====================================================================
-// LagerHome — the actual tree view (folders + products). Internal state
-// holds `path` (array of folders from root → current). No router routes.
+// LagerHome — Online-shop catalog grid
 // =====================================================================
 function LagerHome() {
   const [path, setPath] = useState<LagerFolder[]>([]);
@@ -188,24 +190,19 @@ function LagerHome() {
   const [editProduct, setEditProduct] = useState<LagerProduct | null>(null);
   const [viewProduct, setViewProduct] = useState<LagerProduct | null>(null);
   const [confirmDel, setConfirmDel] = useState<{ kind: "folder"; item: LagerFolder } | { kind: "product"; item: LagerProduct } | null>(null);
-  const [renameFolder, setRenameFolder] = useState<LagerFolder | null>(null);
+  const [editFolder, setEditFolder] = useState<LagerFolder | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
       const [fs, ps] = await Promise.all([
         lagerApi<LagerFolder[]>(`/lager/folders?parent_id=${currentId || "root"}`),
-        currentId
-          ? lagerApi<LagerProduct[]>(`/lager/products?folder_id=${currentId}`)
-          : Promise.resolve([] as LagerProduct[]),
+        currentId ? lagerApi<LagerProduct[]>(`/lager/products?folder_id=${currentId}`) : Promise.resolve([] as LagerProduct[]),
       ]);
       setFolders(fs); setProducts(ps);
-    } catch (e: any) {
-      // 409 is handled by lagerApi (auto-clears session). Other errors show empty.
+    } catch {
       setFolders([]); setProducts([]);
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [currentId]);
 
@@ -214,22 +211,22 @@ function LagerHome() {
 
   return (
     <div className="min-h-full">
-      {/* Header (kept inside the existing app Layout — no separate header bar) */}
-      <div className="px-5 pt-5 pb-3 flex items-center justify-between gap-3">
+      {/* Header */}
+      <div className="px-4 sm:px-5 pt-5 pb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] font-black tracking-[3px] opacity-60">LAGER</div>
           <Breadcrumb path={path} onJump={navigateTo} />
         </div>
         <button
-          onClick={() => { writeSession(null); }}
+          onClick={() => writeSession(null)}
           className="text-[11px] font-bold opacity-60 active:opacity-100 px-3 py-1.5 rounded-full border"
           style={{ borderColor: "rgba(255,255,255,0.2)" }}
           title="Lager-Sitzung beenden"
         >Sperren</button>
       </div>
 
-      {/* Tree contents */}
-      <div className="px-5 pb-28">
+      {/* Catalog grid */}
+      <div className="px-4 sm:px-5 pb-28">
         {loading ? (
           <div className="text-center opacity-60 mt-10 text-sm">Lade…</div>
         ) : folders.length === 0 && products.length === 0 ? (
@@ -237,27 +234,27 @@ function LagerHome() {
             {currentId ? "Dieser Ordner ist leer." : "Noch keine Ordner. Tippe + um zu beginnen."}
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-6">
             {folders.length > 0 && (
-              <div>
-                <div className="text-[10px] font-black tracking-[3px] opacity-50 mb-2">ORDNER</div>
-                <div className="grid grid-cols-2 gap-2.5">
+              <section>
+                <SectionHeader>Ordner · {folders.length}</SectionHeader>
+                <CatalogGrid>
                   {folders.map((f) => (
                     <FolderCard
                       key={f.id}
                       folder={f}
                       onOpen={() => openFolder(f)}
-                      onRename={() => setRenameFolder(f)}
+                      onEdit={() => setEditFolder(f)}
                       onDelete={() => setConfirmDel({ kind: "folder", item: f })}
                     />
                   ))}
-                </div>
-              </div>
+                </CatalogGrid>
+              </section>
             )}
             {products.length > 0 && (
-              <div className="pt-2">
-                <div className="text-[10px] font-black tracking-[3px] opacity-50 mb-2">PRODUKTE</div>
-                <div className="space-y-2.5">
+              <section>
+                <SectionHeader>Produkte · {products.length}</SectionHeader>
+                <CatalogGrid>
                   {products.map((p) => (
                     <ProductCard
                       key={p.id}
@@ -268,14 +265,14 @@ function LagerHome() {
                       onDelete={() => setConfirmDel({ kind: "product", item: p })}
                     />
                   ))}
-                </div>
-              </div>
+                </CatalogGrid>
+              </section>
             )}
           </div>
         )}
       </div>
 
-      {/* Floating + button */}
+      {/* FAB */}
       <button
         onClick={() => setShowAdd("menu")}
         className="fixed bottom-6 right-6 w-14 h-14 rounded-full flex items-center justify-center shadow-2xl z-30 active:scale-95 transition"
@@ -283,26 +280,20 @@ function LagerHome() {
         aria-label="Neu hinzufügen"
       ><Icon d={ICONS.plus} size={28} color="#0F0F0F" /></button>
 
-      {/* "Neu hinzufügen" menu */}
+      {/* Add menu */}
       {showAdd === "menu" && (
         <Modal onClose={() => setShowAdd(null)} title="Neu hinzufügen">
           <button
             onClick={() => setShowAdd("folder")}
             className="w-full py-4 rounded-xl mb-2 font-bold flex items-center gap-3 px-4"
             style={{ backgroundColor: "#A78BFA1A", color: "#A78BFA", border: "1px solid #A78BFA44" }}
-          >
-            <Icon d={ICONS.folder} size={22} color="#A78BFA" />
-            Neuer Ordner
-          </button>
+          ><Icon d={ICONS.folder} size={22} color="#A78BFA" /> Neuer Ordner</button>
           <button
             onClick={() => setShowAdd("product")}
             disabled={!currentId}
             className="w-full py-4 rounded-xl font-bold flex items-center gap-3 px-4 disabled:opacity-30"
             style={{ backgroundColor: "#00E6761A", color: "#00E676", border: "1px solid #00E67644" }}
-          >
-            <Icon d={ICONS.box} size={22} color="#00E676" />
-            Neues Produkt
-          </button>
+          ><Icon d={ICONS.box} size={22} color="#00E676" /> Neues Produkt</button>
           {!currentId && (
             <div className="mt-3 text-[11px] opacity-60 text-center">
               Produkte können nur innerhalb eines Ordners angelegt werden.
@@ -312,51 +303,46 @@ function LagerHome() {
       )}
 
       {showAdd === "folder" && (
-        <FolderEditModal
-          parent_id={currentId}
-          existing={null}
-          onClose={() => setShowAdd(null)}
-          onSaved={() => { setShowAdd(null); load(); }}
-        />
+        <FolderEditModal parent_id={currentId} existing={null}
+          onClose={() => setShowAdd(null)} onSaved={() => { setShowAdd(null); load(); }} />
       )}
-      {renameFolder && (
-        <FolderEditModal
-          parent_id={currentId}
-          existing={renameFolder}
-          onClose={() => setRenameFolder(null)}
-          onSaved={() => { setRenameFolder(null); load(); }}
-        />
+      {editFolder && (
+        <FolderEditModal parent_id={currentId} existing={editFolder}
+          onClose={() => setEditFolder(null)} onSaved={() => { setEditFolder(null); load(); }} />
       )}
       {showAdd === "product" && currentId && (
-        <ProductEditModal
-          folder_id={currentId}
-          existing={null}
-          onClose={() => setShowAdd(null)}
-          onSaved={() => { setShowAdd(null); load(); }}
-        />
+        <ProductEditModal folder_id={currentId} existing={null}
+          onClose={() => setShowAdd(null)} onSaved={() => { setShowAdd(null); load(); }} />
       )}
       {editProduct && (
-        <ProductEditModal
-          folder_id={editProduct.folder_id}
-          existing={editProduct}
-          onClose={() => setEditProduct(null)}
-          onSaved={() => { setEditProduct(null); load(); }}
-        />
+        <ProductEditModal folder_id={editProduct.folder_id} existing={editProduct}
+          onClose={() => setEditProduct(null)} onSaved={() => { setEditProduct(null); load(); }} />
       )}
       {viewProduct && (
-        <ProductDetailModal
-          product={viewProduct}
+        <ProductDetailModal product={viewProduct}
           onClose={() => setViewProduct(null)}
-          onEdit={() => { setEditProduct(viewProduct); setViewProduct(null); }}
-        />
+          onEdit={() => { setEditProduct(viewProduct); setViewProduct(null); }} />
       )}
       {confirmDel && (
-        <ConfirmDeleteModal
-          target={confirmDel}
-          onClose={() => setConfirmDel(null)}
-          onDeleted={() => { setConfirmDel(null); load(); }}
-        />
+        <ConfirmDeleteModal target={confirmDel}
+          onClose={() => setConfirmDel(null)} onDeleted={() => { setConfirmDel(null); load(); }} />
       )}
+    </div>
+  );
+}
+
+// ---------- Section + Grid wrappers ----------
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return <div className="text-[10px] font-black tracking-[3px] opacity-60 mb-2.5 px-1">{children}</div>;
+}
+// 2 cols on phones, 3 on small tablets, 4 on tablets, 5+ on desktop via auto-fit
+function CatalogGrid({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="grid gap-3 sm:gap-4"
+      style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 160px), 1fr))" }}
+    >
+      {children}
     </div>
   );
 }
@@ -369,50 +355,59 @@ function Breadcrumb({ path, onJump }: { path: LagerFolder[]; onJump: (idx: numbe
       {path.map((f, i) => (
         <span key={f.id} className="flex items-center gap-1 min-w-0">
           <span className="opacity-40 px-0.5">›</span>
-          <button
-            onClick={() => onJump(i + 1)}
-            className="active:scale-95 px-1 truncate max-w-[120px]"
-            style={{ color: i === path.length - 1 ? "#A78BFA" : "#fff" }}
-          >{f.name}</button>
+          <button onClick={() => onJump(i + 1)} className="active:scale-95 px-1"
+            style={{ color: i === path.length - 1 ? "#A78BFA" : "#fff" }}>{f.name}</button>
         </span>
       ))}
     </div>
   );
 }
 
-// ---------- Folder Card ----------
-function FolderCard({ folder, onOpen, onRename, onDelete }: {
-  folder: LagerFolder; onOpen: () => void; onRename: () => void; onDelete: () => void;
+// =====================================================================
+// FOLDER CARD — large square image, full multi-line name
+// =====================================================================
+function FolderCard({ folder, onOpen, onEdit, onDelete }: {
+  folder: LagerFolder; onOpen: () => void; onEdit: () => void; onDelete: () => void;
 }) {
   const [menu, setMenu] = useState(false);
+  const img = folder.image_thumbnail || folder.image_url;
   return (
-    <div className="relative">
-      <button
-        onClick={onOpen}
-        className="w-full text-left rounded-xl p-3 border active:scale-[0.98] transition"
-        style={{ borderColor: "#A78BFA33", backgroundColor: "#A78BFA0F" }}
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: "#A78BFA22" }}>
-            <Icon d={ICONS.folder} size={22} color="#A78BFA" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="font-black text-sm leading-tight truncate">{folder.name}</div>
-            <div className="text-[10px] opacity-50 mt-0.5">Ordner</div>
-          </div>
+    <div
+      className="relative group rounded-2xl overflow-hidden border transition-shadow active:scale-[0.98]"
+      style={{
+        borderColor: "#A78BFA22",
+        backgroundColor: "rgba(167,139,250,0.04)",
+        boxShadow: "0 0 0 1px rgba(167,139,250,0.06)",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 0 0 1px rgba(167,139,250,0.4), 0 8px 32px -8px rgba(167,139,250,0.35)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "0 0 0 1px rgba(167,139,250,0.06)"; }}
+    >
+      <button onClick={onOpen} className="block w-full text-left">
+        {/* Square image / placeholder */}
+        <div className="relative aspect-square w-full overflow-hidden" style={{ backgroundColor: "rgba(167,139,250,0.10)" }}>
+          {img ? (
+            <img src={img} alt="" className="w-full h-full object-cover" loading="lazy" />
+          ) : (
+            <FolderPlaceholder />
+          )}
+          {/* "Ordner" badge */}
+          <span className="absolute top-2 left-2 text-[9px] font-black tracking-[2px] px-1.5 py-0.5 rounded"
+            style={{ backgroundColor: "rgba(167,139,250,0.95)", color: "#0F0F0F" }}>ORDNER</span>
+        </div>
+        {/* Body — full multi-line name, no truncation */}
+        <div className="p-3">
+          <div className="font-black text-[13px] leading-snug break-words" style={{ wordBreak: "break-word" }}>{folder.name}</div>
         </div>
       </button>
-      <button
-        onClick={(e) => { e.stopPropagation(); setMenu(!menu); }}
-        className="absolute top-1 right-1 w-7 h-7 rounded-full flex items-center justify-center"
-        style={{ color: "rgba(255,255,255,0.5)" }}
-        aria-label="Menü"
-      >⋯</button>
+      {/* ⋯ menu */}
+      <button onClick={(e) => { e.stopPropagation(); setMenu(!menu); }}
+        className="absolute top-1.5 right-1.5 w-7 h-7 rounded-full flex items-center justify-center bg-black/40 backdrop-blur"
+        style={{ color: "#fff" }} aria-label="Menü">⋯</button>
       {menu && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setMenu(false)} />
-          <div className="absolute top-8 right-1 z-20 bg-neutral-900 border border-white/15 rounded-xl shadow-2xl py-1 w-36">
-            <button onClick={() => { setMenu(false); onRename(); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/5">Umbenennen</button>
+          <div className="absolute top-9 right-1.5 z-20 bg-neutral-900 border border-white/15 rounded-xl shadow-2xl py-1 w-36">
+            <button onClick={() => { setMenu(false); onEdit(); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/5">Bearbeiten</button>
             <button onClick={() => { setMenu(false); onDelete(); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/5" style={{ color: "#FF6B6B" }}>Löschen</button>
           </div>
         </>
@@ -421,7 +416,38 @@ function FolderCard({ folder, onOpen, onRename, onDelete }: {
   );
 }
 
-// ---------- Product Card with quick quantity edit ----------
+// Pretty SVG folder placeholder (purple gradient with subtle folder shape)
+function FolderPlaceholder() {
+  return (
+    <svg viewBox="0 0 200 200" className="w-full h-full" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <defs>
+        <linearGradient id="lf-bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.20" />
+          <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.04" />
+        </linearGradient>
+        <linearGradient id="lf-folder" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.95" />
+          <stop offset="100%" stopColor="#7C5CFA" stopOpacity="0.95" />
+        </linearGradient>
+      </defs>
+      <rect width="200" height="200" fill="url(#lf-bg)" />
+      <g transform="translate(100 100)">
+        <path
+          d="M-46 -30 q-6 0 -6 6 v54 q0 8 8 8 h88 q8 0 8 -8 v-46 q0 -8 -8 -8 h-40 l-8 -10 q-2 -2 -6 -2 z"
+          fill="url(#lf-folder)"
+        />
+        <path
+          d="M-46 -8 q-6 0 -6 6 v32 q0 8 8 8 h88 q8 0 8 -8 v-32 q0 -6 -6 -6 z"
+          fill="#fff" fillOpacity="0.18"
+        />
+      </g>
+    </svg>
+  );
+}
+
+// =====================================================================
+// PRODUCT CARD — square image, full name, status border + glow
+// =====================================================================
 function ProductCard({ product, onChange, onOpen, onEdit, onDelete }: {
   product: LagerProduct;
   onChange: (p: LagerProduct) => void;
@@ -433,6 +459,9 @@ function ProductCard({ product, onChange, onOpen, onEdit, onDelete }: {
   const [qtyDraft, setQtyDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(false);
+
+  const status = computeStock(product);
+  const sst = STOCK_STYLE[status];
 
   const adjust = async (delta: number) => {
     if (busy) return;
@@ -452,143 +481,215 @@ function ProductCard({ product, onChange, onOpen, onEdit, onDelete }: {
   };
 
   const total = product.inhalt_pro_stueck && product.zweite_einheit
-    ? `${product.menge * product.inhalt_pro_stueck} ${product.zweite_einheit}`
+    ? `${(product.menge * product.inhalt_pro_stueck).toLocaleString("de-DE")} ${product.zweite_einheit}`
     : null;
 
+  const img = product.image_thumbnail || product.image_url;
+
   return (
-    <div className="relative rounded-xl border p-3" style={{ borderColor: "rgba(255,255,255,0.12)", backgroundColor: "rgba(255,255,255,0.04)" }}>
-      <div className="flex gap-3">
-        {/* Image */}
-        <button onClick={onOpen} className="shrink-0">
-          {product.image_thumbnail || product.image_url ? (
-            <img src={product.image_thumbnail || product.image_url || ""} alt="" className="w-16 h-16 rounded-lg object-cover bg-black/30" />
+    <div
+      className="relative rounded-2xl overflow-hidden border transition-shadow"
+      style={{
+        borderColor: sst.ring,
+        backgroundColor: "rgba(255,255,255,0.03)",
+        boxShadow: sst.glow,
+      }}
+    >
+      {/* Image */}
+      <button onClick={onOpen} className="block w-full text-left">
+        <div className="relative aspect-square w-full overflow-hidden" style={{ backgroundColor: "rgba(255,255,255,0.04)" }}>
+          {img ? (
+            <img src={img} alt="" className="w-full h-full object-cover" loading="lazy" />
           ) : (
-            <div className="w-16 h-16 rounded-lg flex items-center justify-center" style={{ backgroundColor: "rgba(255,255,255,0.08)" }}>
-              <Icon d={ICONS.box} size={24} color="rgba(255,255,255,0.3)" />
+            <div className="w-full h-full flex items-center justify-center">
+              <Icon d={ICONS.box} size={48} color="rgba(255,255,255,0.18)" />
             </div>
           )}
-        </button>
-        {/* Body */}
-        <div className="flex-1 min-w-0">
-          <button onClick={onOpen} className="text-left w-full">
-            <div className="font-black text-sm leading-tight truncate">{product.name}</div>
-          </button>
-          {/* Warning icons row */}
+          {/* Status badge top-left */}
+          {status !== "neutral" && (
+            <span
+              className="absolute top-2 left-2 text-[9px] font-black tracking-[2px] px-2 py-1 rounded uppercase"
+              style={{ backgroundColor: sst.color, color: "#0F0F0F" }}
+            >{sst.label}</span>
+          )}
+          {/* Warn icons row top-right */}
           {product.warn_symbols && product.warn_symbols.length > 0 && (
-            <div className="flex gap-1 mt-1.5 flex-wrap">
-              {product.warn_symbols.map((id) => <WarnIcon key={id} id={id} size={22} />)}
+            <div className="absolute top-1.5 right-9 flex gap-1 max-w-[60%] flex-wrap justify-end">
+              {product.warn_symbols.slice(0, 4).map((id) => <WarnIcon key={id} id={id} size={22} />)}
+              {product.warn_symbols.length > 4 && (
+                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-black/60 text-white">
+                  +{product.warn_symbols.length - 4}
+                </span>
+              )}
             </div>
           )}
-          {/* Quick qty edit */}
-          <div className="flex items-center gap-2 mt-2">
-            <button
-              onClick={() => adjust(-1)}
-              disabled={busy || product.menge <= 0}
-              className="w-8 h-8 rounded-lg font-black text-base flex items-center justify-center disabled:opacity-30 active:scale-95"
-              style={{ backgroundColor: "rgba(255,107,107,0.15)", color: "#FF6B6B" }}
-              aria-label="weniger"
-            >−</button>
-            {editingQty ? (
-              <input
-                autoFocus
-                type="number"
-                inputMode="numeric"
-                value={qtyDraft}
-                onChange={(e) => setQtyDraft(e.target.value)}
-                onBlur={() => {
-                  const v = parseFloat(qtyDraft);
-                  if (!isNaN(v) && v >= 0) setExact(v);
-                  else setEditingQty(false);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") { (e.target as HTMLInputElement).blur(); }
-                  if (e.key === "Escape") { setEditingQty(false); }
-                }}
-                className="w-16 text-center text-base font-black bg-black/40 border border-white/20 rounded-lg py-1"
-              />
-            ) : (
-              <button
-                onClick={() => { setQtyDraft(String(product.menge)); setEditingQty(true); }}
-                className="min-w-[60px] text-center font-black text-base px-2 py-1 rounded-lg active:bg-white/10"
-              >{product.menge}</button>
-            )}
-            <button
-              onClick={() => adjust(1)}
-              disabled={busy}
-              className="w-8 h-8 rounded-lg font-black text-base flex items-center justify-center disabled:opacity-30 active:scale-95"
-              style={{ backgroundColor: "rgba(0,230,118,0.15)", color: "#00E676" }}
-              aria-label="mehr"
-            >+</button>
-            <span className="text-[12px] opacity-70 truncate ml-0.5">{product.einheit}</span>
-            {total && <span className="text-[10px] opacity-45 ml-1">≈ {total}</span>}
-          </div>
         </div>
-        {/* ⋯ menu */}
-        <button onClick={() => setMenu(!menu)} className="w-7 h-7 -mr-1 -mt-1 self-start rounded-full" style={{ color: "rgba(255,255,255,0.5)" }}>⋯</button>
-      </div>
+      </button>
+      {/* ⋯ menu */}
+      <button onClick={() => setMenu(!menu)}
+        className="absolute top-1.5 right-1.5 w-7 h-7 rounded-full flex items-center justify-center bg-black/40 backdrop-blur"
+        style={{ color: "#fff" }} aria-label="Menü">⋯</button>
       {menu && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setMenu(false)} />
-          <div className="absolute top-9 right-2 z-20 bg-neutral-900 border border-white/15 rounded-xl shadow-2xl py-1 w-36">
+          <div className="absolute top-9 right-1.5 z-20 bg-neutral-900 border border-white/15 rounded-xl shadow-2xl py-1 w-36">
             <button onClick={() => { setMenu(false); onEdit(); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/5">Bearbeiten</button>
             <button onClick={() => { setMenu(false); onDelete(); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/5" style={{ color: "#FF6B6B" }}>Löschen</button>
           </div>
         </>
       )}
+
+      {/* Body */}
+      <div className="p-3">
+        <button onClick={onOpen} className="text-left w-full block">
+          <div className="font-black text-[13px] leading-snug break-words mb-2" style={{ wordBreak: "break-word" }}>{product.name}</div>
+        </button>
+
+        {/* Qty row + unit */}
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => adjust(-1)}
+            disabled={busy || product.menge <= 0}
+            className="w-9 h-9 rounded-lg font-black text-lg flex items-center justify-center disabled:opacity-30 active:scale-95"
+            style={{ backgroundColor: "rgba(255,77,79,0.14)", color: "#FF4D4F" }}
+            aria-label="weniger"
+          >−</button>
+          {editingQty ? (
+            <input
+              autoFocus
+              type="number"
+              inputMode="numeric"
+              value={qtyDraft}
+              onChange={(e) => setQtyDraft(e.target.value)}
+              onBlur={() => {
+                const v = parseFloat(qtyDraft);
+                if (!isNaN(v) && v >= 0) setExact(v); else setEditingQty(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") setEditingQty(false);
+              }}
+              className="flex-1 min-w-0 text-center text-base font-black bg-black/40 border border-white/20 rounded-lg py-1 px-1"
+            />
+          ) : (
+            <button
+              onClick={() => { setQtyDraft(String(product.menge)); setEditingQty(true); }}
+              className="flex-1 min-w-0 text-center font-black text-base px-1 py-1.5 rounded-lg active:bg-white/10"
+              style={{ color: sst.color }}
+            >{product.menge}</button>
+          )}
+          <button
+            onClick={() => adjust(1)}
+            disabled={busy}
+            className="w-9 h-9 rounded-lg font-black text-lg flex items-center justify-center disabled:opacity-30 active:scale-95"
+            style={{ backgroundColor: "rgba(0,230,118,0.16)", color: "#00E676" }}
+            aria-label="mehr"
+          >+</button>
+        </div>
+        <div className="mt-1.5 flex items-baseline gap-1.5 text-[11px] opacity-75">
+          <span className="font-bold">{product.einheit}</span>
+          {total && <span className="opacity-60">≈ {total}</span>}
+        </div>
+        {Number(product.minimum_quantity) > 0 && (
+          <div className="text-[10px] opacity-50 mt-0.5">
+            Mindestmenge: {product.minimum_quantity}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-// ---------- Folder Edit Modal ----------
+// =====================================================================
+// FOLDER EDIT MODAL — name + image picker
+// =====================================================================
 function FolderEditModal({ parent_id, existing, onClose, onSaved }: {
   parent_id: string | null; existing: LagerFolder | null; onClose: () => void; onSaved: () => void;
 }) {
   const [name, setName] = useState(existing?.name || "");
+  const [imageUrl, setImageUrl] = useState(existing?.image_url || "");
+  const [imageThumb, setImageThumb] = useState(existing?.image_thumbnail || "");
+  const [imagePid, setImagePid] = useState(existing?.image_public_id || "");
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  const onPickImage = async (file: File) => {
+    if (!file) return;
+    setUploading(true); setErr("");
+    try {
+      const cfg = loadServerConfig();
+      const base = (cfg?.apiBaseUrl || "/api").replace(/\/$/, "");
+      const fd = new FormData(); fd.append("file", file);
+      const r = await fetch(`${base}/lager/folders/upload-image`, { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.detail || "Upload fehlgeschlagen");
+      setImageUrl(j.url); setImageThumb(j.thumbnail); setImagePid(j.public_id);
+    } catch (e: any) { setErr(e?.message || "Upload fehlgeschlagen"); }
+    finally { setUploading(false); }
+  };
 
   const save = async () => {
     if (busy) return;
     if (!name.trim()) { setErr("Name fehlt"); return; }
     setBusy(true); setErr("");
     try {
+      const body: any = {
+        name: name.trim(),
+        image_url: imageUrl || null,
+        image_thumbnail: imageThumb || null,
+        image_public_id: imagePid || null,
+      };
       if (existing) {
-        await lagerApi(`/lager/folders/${existing.id}`, { method: "PATCH", body: { name: name.trim() } });
+        await lagerApi(`/lager/folders/${existing.id}`, { method: "PATCH", body });
       } else {
-        await lagerApi(`/lager/folders`, { method: "POST", body: { name: name.trim(), parent_id } });
+        await lagerApi(`/lager/folders`, { method: "POST", body: { ...body, parent_id } });
       }
       onSaved();
-    } catch (e: any) {
-      setErr(e?.payload?.detail || "Fehler beim Speichern");
-    } finally {
-      setBusy(false);
-    }
+    } catch (e: any) { setErr(e?.payload?.detail || "Fehler beim Speichern"); }
+    finally { setBusy(false); }
   };
 
   return (
-    <Modal onClose={onClose} title={existing ? "Ordner umbenennen" : "Neuer Ordner"}>
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Ordnername"
-        className="w-full bg-black/40 border border-white/15 rounded-xl px-4 py-3 text-base outline-none"
-      />
-      {err && <div className="text-xs mt-2" style={{ color: "#FF6B6B" }}>{err}</div>}
-      <div className="flex gap-2 mt-4">
-        <button onClick={onClose} className="flex-1 py-3 rounded-xl font-bold border border-white/15">Abbrechen</button>
-        <button onClick={save} disabled={busy} className="flex-1 py-3 rounded-xl font-black disabled:opacity-50" style={{ backgroundColor: "#A78BFA", color: "#0F0F0F" }}>{busy ? "…" : "Speichern"}</button>
+    <Modal onClose={onClose} title={existing ? "Ordner bearbeiten" : "Neuer Ordner"} large>
+      <div className="space-y-3">
+        {/* Image picker */}
+        <div className="flex gap-3 items-center">
+          <button onClick={() => fileRef.current?.click()}
+            className="w-24 h-24 rounded-xl border-2 border-dashed border-white/20 flex items-center justify-center overflow-hidden bg-black/30">
+            {imageThumb || imageUrl
+              ? <img src={imageThumb || imageUrl} alt="" className="w-full h-full object-cover" />
+              : <Icon d={ICONS.folder} size={32} color="rgba(255,255,255,0.4)" />}
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickImage(f); }} />
+          <div className="flex-1 text-xs opacity-70 leading-snug">
+            {uploading ? "Lade Bild hoch…" : (imageUrl ? "Tippen zum Ändern" : "Tippen zum Hochladen (optional)")}
+          </div>
+        </div>
+
+        <Field label="Name">
+          <input value={name} onChange={(e) => setName(e.target.value)} className="input-style" autoFocus />
+        </Field>
+        {err && <div className="text-xs" style={{ color: "#FF6B6B" }}>{err}</div>}
+        <div className="flex gap-2 pt-2">
+          <button onClick={onClose} className="flex-1 py-3 rounded-xl font-bold border border-white/15">Abbrechen</button>
+          <button onClick={save} disabled={busy} className="flex-1 py-3 rounded-xl font-black disabled:opacity-50" style={{ backgroundColor: "#A78BFA", color: "#0F0F0F" }}>{busy ? "…" : "Speichern"}</button>
+        </div>
       </div>
     </Modal>
   );
 }
 
-// ---------- Product Edit Modal ----------
+// =====================================================================
+// PRODUCT EDIT MODAL
+// =====================================================================
 function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
   folder_id: string; existing: LagerProduct | null; onClose: () => void; onSaved: () => void;
 }) {
   const [name, setName]               = useState(existing?.name || "");
   const [menge, setMenge]             = useState<string>(existing ? String(existing.menge) : "0");
+  const [minQty, setMinQty]           = useState<string>(existing && existing.minimum_quantity ? String(existing.minimum_quantity) : "");
   const [einheit, setEinheit]         = useState(existing?.einheit || "Stück");
   const [hasSecondary, setHasSecondary] = useState(!!(existing?.inhalt_pro_stueck && existing?.zweite_einheit));
   const [inhalt, setInhalt]           = useState<string>(existing?.inhalt_pro_stueck != null ? String(existing.inhalt_pro_stueck) : "");
@@ -601,7 +702,6 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
   const [busy, setBusy]               = useState(false);
   const [err, setErr]                 = useState("");
   const [uploading, setUploading]     = useState(false);
-
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const onPickImage = async (file: File) => {
@@ -615,11 +715,8 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
       const j = await r.json();
       if (!r.ok) throw new Error(j?.detail || "Upload fehlgeschlagen");
       setImageUrl(j.url); setImageThumb(j.thumbnail); setImagePid(j.public_id);
-    } catch (e: any) {
-      setErr(e?.message || "Upload fehlgeschlagen");
-    } finally {
-      setUploading(false);
-    }
+    } catch (e: any) { setErr(e?.message || "Upload fehlgeschlagen"); }
+    finally { setUploading(false); }
   };
 
   const save = async () => {
@@ -630,6 +727,7 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
       folder_id, name: name.trim(),
       menge: Number(menge) || 0,
       einheit: einheit.trim() || "Stück",
+      minimum_quantity: Number(minQty) || 0,
       info_text: info,
       warn_symbols: warnIds,
       image_url: imageUrl || null,
@@ -639,31 +737,22 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
       zweite_einheit: hasSecondary && zweite ? zweite.trim() : null,
     };
     try {
-      if (existing) {
-        await lagerApi(`/lager/products/${existing.id}`, { method: "PATCH", body });
-      } else {
-        await lagerApi(`/lager/products`, { method: "POST", body });
-      }
+      if (existing) await lagerApi(`/lager/products/${existing.id}`, { method: "PATCH", body });
+      else          await lagerApi(`/lager/products`, { method: "POST", body });
       onSaved();
-    } catch (e: any) {
-      setErr(e?.payload?.detail || "Fehler beim Speichern");
-    } finally {
-      setBusy(false);
-    }
+    } catch (e: any) { setErr(e?.payload?.detail || "Fehler beim Speichern"); }
+    finally { setBusy(false); }
   };
 
   return (
     <Modal onClose={onClose} title={existing ? "Produkt bearbeiten" : "Neues Produkt"} large>
       <div className="space-y-3">
-        {/* Image picker */}
         <div className="flex gap-3 items-center">
-          <button
-            onClick={() => fileRef.current?.click()}
-            className="w-20 h-20 rounded-xl border-2 border-dashed border-white/20 flex items-center justify-center overflow-hidden bg-black/30"
-          >
+          <button onClick={() => fileRef.current?.click()}
+            className="w-24 h-24 rounded-xl border-2 border-dashed border-white/20 flex items-center justify-center overflow-hidden bg-black/30">
             {imageThumb || imageUrl
               ? <img src={imageThumb || imageUrl} alt="" className="w-full h-full object-cover" />
-              : <Icon d={ICONS.box} size={28} color="rgba(255,255,255,0.4)" />}
+              : <Icon d={ICONS.box} size={32} color="rgba(255,255,255,0.4)" />}
           </button>
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickImage(f); }} />
           <div className="flex-1 text-xs opacity-70 leading-snug">
@@ -684,7 +773,13 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
           </Field>
         </div>
 
-        {/* Optional secondary unit */}
+        <Field label="Mindestmenge (optional)">
+          <input type="number" inputMode="decimal" value={minQty} onChange={(e) => setMinQty(e.target.value)} placeholder="0 = keine" className="input-style" />
+          <div className="text-[10px] opacity-50 mt-1">
+            Wird das Produkt unter diese Menge fallen, leuchtet die Karte orange. Bei 0 oder leer rot.
+          </div>
+        </Field>
+
         <div className="rounded-xl border border-white/10 p-3">
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={hasSecondary} onChange={(e) => setHasSecondary(e.target.checked)} />
@@ -711,31 +806,40 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
         </Field>
 
         {err && <div className="text-xs" style={{ color: "#FF6B6B" }}>{err}</div>}
-
         <div className="flex gap-2 pt-2">
           <button onClick={onClose} className="flex-1 py-3 rounded-xl font-bold border border-white/15">Abbrechen</button>
-          <button onClick={save} disabled={busy} className="flex-1 py-3 rounded-xl font-black disabled:opacity-50" style={{ backgroundColor: "#A78BFA", color: "#0F0F0F" }}>
-            {busy ? "…" : "Speichern"}
-          </button>
+          <button onClick={save} disabled={busy} className="flex-1 py-3 rounded-xl font-black disabled:opacity-50" style={{ backgroundColor: "#A78BFA", color: "#0F0F0F" }}>{busy ? "…" : "Speichern"}</button>
         </div>
       </div>
     </Modal>
   );
 }
 
-// ---------- Product Detail Modal ----------
+// =====================================================================
+// PRODUCT DETAIL MODAL
+// =====================================================================
 function ProductDetailModal({ product, onClose, onEdit }: { product: LagerProduct; onClose: () => void; onEdit: () => void }) {
+  const status = computeStock(product);
+  const sst = STOCK_STYLE[status];
   return (
     <Modal onClose={onClose} title={product.name} large>
       <div className="space-y-3">
         {(product.image_url || product.image_thumbnail) && (
           <img src={product.image_url || product.image_thumbnail || ""} alt="" className="w-full max-h-72 object-contain rounded-xl bg-black/30" />
         )}
-        <div className="flex items-center gap-2 text-sm">
-          <span className="font-black text-2xl" style={{ color: "#A78BFA" }}>{product.menge}</span>
-          <span className="opacity-70">{product.einheit}</span>
+        <div className="flex flex-wrap items-center gap-3">
+          <div>
+            <span className="font-black text-3xl" style={{ color: sst.color }}>{product.menge}</span>
+            <span className="opacity-70 ml-1">{product.einheit}</span>
+          </div>
           {product.inhalt_pro_stueck && product.zweite_einheit && (
-            <span className="opacity-50 text-xs">≈ {product.menge * product.inhalt_pro_stueck} {product.zweite_einheit}</span>
+            <span className="opacity-50 text-xs">≈ {(product.menge * product.inhalt_pro_stueck).toLocaleString("de-DE")} {product.zweite_einheit}</span>
+          )}
+          {Number(product.minimum_quantity) > 0 && (
+            <span className="text-xs opacity-60">Min: {product.minimum_quantity}</span>
+          )}
+          {status !== "neutral" && (
+            <span className="ml-auto text-[10px] font-black tracking-[2px] px-2 py-1 rounded uppercase" style={{ backgroundColor: sst.color, color: "#0F0F0F" }}>{sst.label}</span>
           )}
         </div>
         {product.info_text && (
@@ -770,7 +874,9 @@ function ProductDetailModal({ product, onClose, onEdit }: { product: LagerProduc
   );
 }
 
-// ---------- Confirm Delete ----------
+// =====================================================================
+// CONFIRM DELETE
+// =====================================================================
 function ConfirmDeleteModal({ target, onClose, onDeleted }: {
   target: { kind: "folder"; item: LagerFolder } | { kind: "product"; item: LagerProduct };
   onClose: () => void; onDeleted: () => void;
@@ -796,9 +902,7 @@ function ConfirmDeleteModal({ target, onClose, onDeleted }: {
       } else {
         setErr(detail || "Löschen fehlgeschlagen");
       }
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
 
   return (
@@ -807,30 +911,26 @@ function ConfirmDeleteModal({ target, onClose, onDeleted }: {
         Möchten Sie <span className="font-black">„{name}"</span> wirklich löschen?
       </div>
       {err && (
-        <div className="rounded-xl p-3 mb-3 border" style={{ borderColor: "#FF6B6B66", backgroundColor: "#FF6B6B14", color: "#FF6B6B" }}>
-          {err}
-        </div>
+        <div className="rounded-xl p-3 mb-3 border" style={{ borderColor: "#FF6B6B66", backgroundColor: "#FF6B6B14", color: "#FF6B6B" }}>{err}</div>
       )}
       <div className="flex gap-2">
         <button onClick={onClose} className="flex-1 py-3 rounded-xl font-bold border border-white/15">Abbrechen</button>
-        <button onClick={doDelete} disabled={busy} className="flex-1 py-3 rounded-xl font-black" style={{ backgroundColor: "#FF6B6B", color: "#fff" }}>
-          {busy ? "…" : "Löschen"}
-        </button>
+        <button onClick={doDelete} disabled={busy} className="flex-1 py-3 rounded-xl font-black" style={{ backgroundColor: "#FF6B6B", color: "#fff" }}>{busy ? "…" : "Löschen"}</button>
       </div>
     </Modal>
   );
 }
 
-// ---------- Warning Symbols Picker ----------
+// =====================================================================
+// WARN PICKER
+// =====================================================================
 function WarnPicker({ selected, onChange }: { selected: string[]; onChange: (ids: string[]) => void }) {
   const groups = useMemo(() => {
     const out: Record<string, typeof WARN_SYMBOLS> = { ppe: [], ghs: [], warn: [] };
     for (const s of WARN_SYMBOLS) out[s.group].push(s);
     return out;
   }, []);
-  const toggle = (id: string) => {
-    onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
-  };
+  const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
   const groupLabel: Record<string, string> = {
     ppe: "PPE — Schutzausrüstung",
     ghs: "GHS — Gefahrstoff",
@@ -849,8 +949,8 @@ function WarnPicker({ selected, onChange }: { selected: string[]; onChange: (ids
                   key={s.id}
                   type="button"
                   onClick={() => toggle(s.id)}
-                  className={`rounded-xl p-2 border-2 active:scale-95 transition flex flex-col items-center gap-1 ${active ? "border-brand-purple" : "border-white/10"}`}
-                  style={{ borderColor: active ? "#A78BFA" : undefined, backgroundColor: active ? "#A78BFA14" : "rgba(255,255,255,0.03)" }}
+                  className="rounded-xl p-2 border-2 active:scale-95 transition flex flex-col items-center gap-1"
+                  style={{ borderColor: active ? "#A78BFA" : "rgba(255,255,255,0.1)", backgroundColor: active ? "#A78BFA14" : "rgba(255,255,255,0.03)" }}
                   aria-pressed={active}
                 >
                   <WarnIcon id={s.id} size={42} />
@@ -865,14 +965,12 @@ function WarnPicker({ selected, onChange }: { selected: string[]; onChange: (ids
   );
 }
 
-// ---------- shared little components ----------
+// ---------- shared ----------
 function Modal({ children, onClose, title, large }: { children: React.ReactNode; onClose: () => void; title: string; large?: boolean }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60" onClick={onClose}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className={`w-full ${large ? "max-w-md" : "max-w-sm"} bg-neutral-950 border border-white/10 rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90vh] overflow-y-auto`}
-      >
+      <div onClick={(e) => e.stopPropagation()}
+        className={`w-full ${large ? "max-w-md" : "max-w-sm"} bg-neutral-950 border border-white/10 rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-h-[90vh] overflow-y-auto`}>
         <div className="flex items-center justify-between mb-4">
           <div className="text-base font-black tracking-wider">{title}</div>
           <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ color: "rgba(255,255,255,0.6)" }}>✕</button>
