@@ -182,6 +182,47 @@ const WorkflowSchema = new mongoose.Schema({
 }, { versionKey: false });
 const WorkflowModel = mongoose.model('Workflow', WorkflowSchema, 'workflows');
 
+// =====================================================================
+// LAGER (Inventory) — independent PIN-gated section. Two tree-structured
+// collections: folders & products. Folders nest via parent_id (null = root).
+// =====================================================================
+const LagerSettingsSchema = new mongoose.Schema({
+  _id: { type: String, default: 'singleton' },
+  pin: { type: String, default: '1234' },             // plain (4–6 digits)
+  pin_version: { type: Number, default: 1 },          // bumps on every change
+  updated_at: { type: String, default: () => new Date().toISOString() },
+}, { versionKey: false, _id: false });
+const LagerSettingsModel = mongoose.model('LagerSettings', LagerSettingsSchema, 'lager_settings');
+
+const LagerFolderSchema = new mongoose.Schema({
+  id: { type: String, unique: true, index: true },
+  parent_id: { type: String, default: null, index: true }, // null = root
+  name: { type: String, required: true },
+  sort_order: { type: Number, default: 0 },
+  created_at: { type: String, default: () => new Date().toISOString() },
+  updated_at: { type: String, default: () => new Date().toISOString() },
+}, { versionKey: false });
+const LagerFolderModel = mongoose.model('LagerFolder', LagerFolderSchema, 'lager_folders');
+
+const LagerProductSchema = new mongoose.Schema({
+  id: { type: String, unique: true, index: true },
+  folder_id: { type: String, required: true, index: true },
+  name: { type: String, required: true },
+  image_url: { type: String, default: null },
+  image_thumbnail: { type: String, default: null },
+  image_public_id: { type: String, default: null },
+  menge: { type: Number, default: 0 },
+  einheit: { type: String, default: 'Stück' },
+  // Optional secondary unit  (e.g. 1 Stück = 5 Liter)
+  inhalt_pro_stueck: { type: Number, default: null },
+  zweite_einheit: { type: String, default: null },
+  info_text: { type: String, default: '' },
+  warn_symbols: { type: [String], default: [] },     // e.g. ["ppe.gloves","ghs.flame"]
+  created_at: { type: String, default: () => new Date().toISOString() },
+  updated_at: { type: String, default: () => new Date().toISOString() },
+}, { versionKey: false });
+const LagerProductModel = mongoose.model('LagerProduct', LagerProductSchema, 'lager_products');
+
 // ===== Helpers =====
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const nowIso = () => new Date().toISOString();
@@ -920,6 +961,242 @@ router.post('/orders/upload-image', upload.single('file'), async (req, res) => {
   } catch (err) {
     console.error('[orders/upload-image] Cloudinary error:', err?.message, err?.http_code);
     res.status(500).json({ detail: 'Upload fehlgeschlagen: ' + (err?.message || 'unbekannt') });
+  }
+});
+
+// =====================================================================
+// LAGER ROUTES — PIN-gated tree of folders & products
+// =====================================================================
+async function getLagerSettings() {
+  let s = await LagerSettingsModel.findById('singleton').lean();
+  if (!s) {
+    await LagerSettingsModel.create({ _id: 'singleton', pin: '1234', pin_version: 1 });
+    s = await LagerSettingsModel.findById('singleton').lean();
+  }
+  return s;
+}
+
+// Middleware: enforce that the request carries a Lager-Session header whose
+// pin_version matches the CURRENT pin_version. If they differ, reply with a
+// dedicated 409 status + `{ detail: 'pin_changed' }` so the frontend can wipe
+// its session and re-prompt for the new PIN.
+async function requireLagerSession(req, res, next) {
+  try {
+    const s = await getLagerSettings();
+    const sent = parseInt(req.headers['x-lager-pv'] || '', 10);
+    if (!sent || sent !== s.pin_version) {
+      return res.status(409).json({ detail: 'pin_changed' });
+    }
+    next();
+  } catch (e) {
+    res.status(500).json({ detail: 'Lager-Sitzung konnte nicht geprüft werden' });
+  }
+}
+
+// PIN: verify
+router.post('/lager/verify-pin', async (req, res) => {
+  const { pin } = req.body || {};
+  if (typeof pin !== 'string' || !/^\d{4,6}$/.test(pin)) {
+    return res.status(400).json({ detail: 'PIN muss 4 bis 6 Ziffern enthalten' });
+  }
+  const s = await getLagerSettings();
+  if (s.pin !== pin) return res.status(401).json({ detail: 'Falscher PIN' });
+  res.json({ ok: true, pin_version: s.pin_version });
+});
+
+// PIN: change (admin only). Increments pin_version → invalidates ALL sessions.
+router.post('/lager/admin/set-pin', requireAdmin, async (req, res) => {
+  const { pin } = req.body || {};
+  if (typeof pin !== 'string' || !/^\d{4,6}$/.test(pin)) {
+    return res.status(400).json({ detail: 'PIN muss 4 bis 6 Ziffern enthalten' });
+  }
+  const s = await getLagerSettings();
+  await LagerSettingsModel.updateOne(
+    { _id: 'singleton' },
+    { $set: { pin, updated_at: new Date().toISOString() }, $inc: { pin_version: 1 } },
+    { upsert: true },
+  );
+  const fresh = await getLagerSettings();
+  res.json({ ok: true, pin_version: fresh.pin_version });
+});
+
+// Public: tell frontend the current pin_version so it can detect a change
+// even when no other call is in flight (used by Lager-Gate on mount).
+router.get('/lager/pin-version', async (req, res) => {
+  const s = await getLagerSettings();
+  res.json({ pin_version: s.pin_version });
+});
+
+// ----- Folders -----
+router.get('/lager/folders', requireLagerSession, async (req, res) => {
+  const filter = {};
+  if (typeof req.query.parent_id === 'string') {
+    filter.parent_id = req.query.parent_id === 'root' ? null : req.query.parent_id;
+  }
+  const folders = await LagerFolderModel.find(filter, { _id: 0 }).sort({ sort_order: 1, name: 1 }).lean();
+  res.json(folders);
+});
+
+router.get('/lager/folders/:id', requireLagerSession, async (req, res) => {
+  const f = await LagerFolderModel.findOne({ id: req.params.id }, { _id: 0 }).lean();
+  if (!f) return res.status(404).json({ detail: 'Ordner nicht gefunden' });
+  res.json(f);
+});
+
+router.post('/lager/folders', requireLagerSession, async (req, res) => {
+  const { name, parent_id } = req.body || {};
+  if (!name || typeof name !== 'string') return res.status(400).json({ detail: 'Name fehlt' });
+  // Validate parent exists if specified
+  if (parent_id) {
+    const p = await LagerFolderModel.findOne({ id: parent_id }).lean();
+    if (!p) return res.status(400).json({ detail: 'Übergeordneter Ordner existiert nicht' });
+  }
+  const f = await LagerFolderModel.create({
+    id: 'lf_' + Math.random().toString(36).slice(2, 11),
+    name: name.trim(),
+    parent_id: parent_id || null,
+  });
+  res.json(f.toObject());
+});
+
+router.patch('/lager/folders/:id', requireLagerSession, async (req, res) => {
+  const updates = {};
+  if (typeof req.body?.name === 'string') updates.name = req.body.name.trim();
+  if (typeof req.body?.sort_order === 'number') updates.sort_order = req.body.sort_order;
+  if (!Object.keys(updates).length) return res.status(400).json({ detail: 'Keine Änderungen' });
+  updates.updated_at = new Date().toISOString();
+  const f = await LagerFolderModel.findOneAndUpdate(
+    { id: req.params.id }, { $set: updates }, { new: true, projection: { _id: 0 } },
+  ).lean();
+  if (!f) return res.status(404).json({ detail: 'Ordner nicht gefunden' });
+  res.json(f);
+});
+
+router.delete('/lager/folders/:id', requireLagerSession, async (req, res) => {
+  // Refuse to delete a non-empty folder.
+  const subCount = await LagerFolderModel.countDocuments({ parent_id: req.params.id });
+  const prodCount = await LagerProductModel.countDocuments({ folder_id: req.params.id });
+  if (subCount + prodCount > 0) {
+    return res.status(409).json({
+      detail: 'Ordner ist nicht leer',
+      subfolders: subCount, products: prodCount,
+    });
+  }
+  const r = await LagerFolderModel.deleteOne({ id: req.params.id });
+  if (!r.deletedCount) return res.status(404).json({ detail: 'Ordner nicht gefunden' });
+  res.json({ ok: true });
+});
+
+// ----- Products -----
+router.get('/lager/products', requireLagerSession, async (req, res) => {
+  const filter = {};
+  if (typeof req.query.folder_id === 'string') filter.folder_id = req.query.folder_id;
+  const items = await LagerProductModel.find(filter, { _id: 0 }).sort({ name: 1 }).lean();
+  res.json(items);
+});
+
+router.get('/lager/products/:id', requireLagerSession, async (req, res) => {
+  const p = await LagerProductModel.findOne({ id: req.params.id }, { _id: 0 }).lean();
+  if (!p) return res.status(404).json({ detail: 'Produkt nicht gefunden' });
+  res.json(p);
+});
+
+router.post('/lager/products', requireLagerSession, async (req, res) => {
+  const { folder_id, name } = req.body || {};
+  if (!folder_id) return res.status(400).json({ detail: 'folder_id fehlt' });
+  if (!name) return res.status(400).json({ detail: 'Name fehlt' });
+  const folder = await LagerFolderModel.findOne({ id: folder_id }).lean();
+  if (!folder) return res.status(400).json({ detail: 'Ordner existiert nicht' });
+  const doc = await LagerProductModel.create({
+    id: 'lp_' + Math.random().toString(36).slice(2, 11),
+    folder_id,
+    name: String(name).trim(),
+    image_url: req.body.image_url || null,
+    image_thumbnail: req.body.image_thumbnail || null,
+    image_public_id: req.body.image_public_id || null,
+    menge: Number(req.body.menge) || 0,
+    einheit: req.body.einheit || 'Stück',
+    inhalt_pro_stueck: req.body.inhalt_pro_stueck != null ? Number(req.body.inhalt_pro_stueck) : null,
+    zweite_einheit: req.body.zweite_einheit || null,
+    info_text: req.body.info_text || '',
+    warn_symbols: Array.isArray(req.body.warn_symbols) ? req.body.warn_symbols : [],
+  });
+  res.json(doc.toObject());
+});
+
+router.patch('/lager/products/:id', requireLagerSession, async (req, res) => {
+  const allowed = ['name', 'image_url', 'image_thumbnail', 'image_public_id',
+                   'menge', 'einheit', 'inhalt_pro_stueck', 'zweite_einheit',
+                   'info_text', 'warn_symbols', 'folder_id'];
+  const updates = {};
+  for (const k of allowed) if (k in (req.body || {})) updates[k] = req.body[k];
+  if (!Object.keys(updates).length) return res.status(400).json({ detail: 'Keine Änderungen' });
+  if ('folder_id' in updates) {
+    const f = await LagerFolderModel.findOne({ id: updates.folder_id }).lean();
+    if (!f) return res.status(400).json({ detail: 'Ziel-Ordner existiert nicht' });
+  }
+  updates.updated_at = new Date().toISOString();
+  const p = await LagerProductModel.findOneAndUpdate(
+    { id: req.params.id }, { $set: updates }, { new: true, projection: { _id: 0 } },
+  ).lean();
+  if (!p) return res.status(404).json({ detail: 'Produkt nicht gefunden' });
+  res.json(p);
+});
+
+// Quick quantity edit. `delta` adds/subtracts; `set` overrides absolute value.
+router.patch('/lager/products/:id/menge', requireLagerSession, async (req, res) => {
+  const cur = await LagerProductModel.findOne({ id: req.params.id }, { _id: 0 }).lean();
+  if (!cur) return res.status(404).json({ detail: 'Produkt nicht gefunden' });
+  let next = cur.menge || 0;
+  if (typeof req.body?.set === 'number') next = req.body.set;
+  else if (typeof req.body?.delta === 'number') next = next + req.body.delta;
+  else return res.status(400).json({ detail: 'set oder delta erwartet' });
+  if (next < 0) next = 0;
+  const p = await LagerProductModel.findOneAndUpdate(
+    { id: req.params.id },
+    { $set: { menge: next, updated_at: new Date().toISOString() } },
+    { new: true, projection: { _id: 0 } },
+  ).lean();
+  res.json(p);
+});
+
+router.delete('/lager/products/:id', requireLagerSession, async (req, res) => {
+  const p = await LagerProductModel.findOne({ id: req.params.id }).lean();
+  if (!p) return res.status(404).json({ detail: 'Produkt nicht gefunden' });
+  // Best-effort delete the Cloudinary asset (don't block on failures).
+  if (p.image_public_id && CLOUDINARY_ENABLED) {
+    cloudinary.uploader.destroy(p.image_public_id).catch(() => {});
+  }
+  await LagerProductModel.deleteOne({ id: req.params.id });
+  res.json({ ok: true });
+});
+
+// Image upload (proxy to Cloudinary, mirroring /orders/upload-image).
+router.post('/lager/products/upload-image', upload.single('file'), async (req, res) => {
+  if (!CLOUDINARY_ENABLED) return res.status(503).json({ detail: 'Cloudinary nicht konfiguriert' });
+  if (!req.file?.buffer) return res.status(400).json({ detail: 'Keine Datei gesendet' });
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'lager', resource_type: 'image', quality: 'auto:best', fetch_format: 'auto' },
+        (err, r) => err ? reject(err) : resolve(r),
+      );
+      stream.end(req.file.buffer);
+    });
+    const thumbnail = cloudinary.url(result.public_id, {
+      secure: true, width: 400, height: 400, crop: 'fill', gravity: 'auto',
+      quality: 'auto', fetch_format: 'auto',
+    });
+    res.json({
+      ok: true,
+      url: result.secure_url,
+      thumbnail,
+      public_id: result.public_id,
+      width: result.width, height: result.height,
+    });
+  } catch (err) {
+    console.error('[lager/upload-image] Cloudinary error:', err?.message);
+    res.status(500).json({ detail: 'Upload fehlgeschlagen: ' + (err?.message || '') });
   }
 });
 

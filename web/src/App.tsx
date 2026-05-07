@@ -37,6 +37,7 @@ import {
   BestellungArchive, BestellungArchiveMonth,
 } from "./components/BestellungViews";
 import { MitarbeiterLogin, getCurrentMitarbeiter, subscribeMitarbeiter, clearMitarbeiterSession } from "./components/MitarbeiterLogin";
+import { LagerGate } from "./components/LagerViews";
 import { installOfflineSync } from "./lib/photos";
 import { useAdminName, setAdminName } from "./lib/adminName";
 import { useAdminTheme, setAdminTheme, resolveBg, isDark as isDarkHex } from "./lib/adminTheme";
@@ -68,7 +69,7 @@ export default function App() {
       <Route path="/admin/server" element={<AdminServer />} />
       <Route path="/tablet" element={<TabletGate />} />
       <Route path="/mitarbeiter/login" element={<MitarbeiterLogin />} />
-      <Route path="/lager" element={<ComingSoonPage title="LAGER" subtitle="Bestände · Material · Verbrauch" iconKey="box" color="#A78BFA" />} />
+      <Route path="/lager" element={<LagerGate />} />
       <Route path="/bestellung" element={<BestellungHome />} />
       <Route path="/bestellung/neu" element={<BestellungEdit />} />
       <Route path="/bestellung/edit/:id" element={<BestellungEdit />} />
@@ -1865,6 +1866,7 @@ function AdminSettings() {
           <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Neues Passwort" className="input-base mb-3" />
           <button onClick={savePw} className="btn-primary h-12">SPEICHERN</button>
         </div>
+        <LagerPinAdminSection />
         <div>
           <div className="section-label mb-3">App-Update</div>
           <div className="flex justify-between items-center bg-surface-card border border-surface-border p-4 mb-3 rounded-xl">
@@ -2694,3 +2696,59 @@ const GBtn_unused = ({ onClick, dot, label, dark }: any) => (
   </button>
 );
 void GBtn_unused;
+
+// =====================================================================
+// LagerPinAdminSection — small admin-only block to change the Lager PIN.
+// Used inside <AdminSettings/>. Changing the PIN bumps `pin_version`
+// server-side, which immediately invalidates any active Lager session.
+// =====================================================================
+function LagerPinAdminSection() {
+  const [pin, setPin] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const save = async () => {
+    if (!/^\d{4,6}$/.test(pin)) { setMsg({ kind: "err", text: "PIN muss 4 bis 6 Ziffern enthalten" }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api<{ ok: true; pin_version: number }>("/lager/admin/set-pin", {
+        method: "POST", auth: true, body: { pin },
+      });
+      setPin("");
+      setMsg({ kind: "ok", text: `Neuer PIN gespeichert. Aktive Lager-Sitzungen wurden beendet (Version ${r.pin_version}).` });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e?.message || "Fehler beim Speichern" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <div className="section-label mb-3">Lager-PIN ändern</div>
+      <p className="text-xs text-white/50 mb-3 leading-snug">
+        4 bis 6 Ziffern. Beim Speichern wird jede aktive Lager-Sitzung sofort beendet —
+        beim nächsten Öffnen wird der neue PIN abgefragt.
+      </p>
+      <input
+        type="password"
+        inputMode="numeric"
+        pattern="\d*"
+        maxLength={6}
+        value={pin}
+        onChange={(e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 6)); setMsg(null); }}
+        placeholder="Neuer Lager-PIN"
+        className="input-base mb-3"
+      />
+      {msg && (
+        <div
+          className="text-xs mb-3 p-2 rounded-lg border"
+          style={msg.kind === "ok"
+            ? { borderColor: "#00E67644", backgroundColor: "#00E6761A", color: "#00E676" }
+            : { borderColor: "#FF6B6B44", backgroundColor: "#FF6B6B1A", color: "#FF6B6B" }}
+        >{msg.text}</div>
+      )}
+      <button onClick={save} disabled={busy || pin.length < 4} className="btn-primary h-12 disabled:opacity-50">
+        {busy ? "..." : "PIN SPEICHERN"}
+      </button>
+    </div>
+  );
+}
