@@ -211,6 +211,11 @@ const LagerProductSchema = new mongoose.Schema({
   id: { type: String, unique: true, index: true },
   folder_id: { type: String, required: true, index: true },
   name: { type: String, required: true },
+  // LAN — Lager-Nummer for inventory ordering / Excel sorting
+  // (e.g. "BA001","BB014"). Optional — old products may not have one.
+  // Sparse unique index allows many docs without LAN, but enforces
+  // uniqueness for those that do have it.
+  lan: { type: String, default: null, index: { unique: true, sparse: true } },
   image_url: { type: String, default: null },
   image_thumbnail: { type: String, default: null },
   image_public_id: { type: String, default: null },
@@ -1137,8 +1142,43 @@ router.post('/lager/folders/upload-image', upload.single('file'), async (req, re
 router.get('/lager/products', requireLagerSession, async (req, res) => {
   const filter = {};
   if (typeof req.query.folder_id === 'string') filter.folder_id = req.query.folder_id;
-  const items = await LagerProductModel.find(filter, { _id: 0 }).sort({ name: 1 }).lean();
+  // Sort: LAN ascending (locale-aware so "BA001" < "BB001"), then by name.
+  // Products without LAN come AFTER (so they sort to the end of the list).
+  const items = await LagerProductModel.find(filter, { _id: 0 })
+    .collation({ locale: 'de', numericOrdering: true })
+    .sort({ lan: 1, name: 1 })
+    .lean();
   res.json(items);
+});
+
+// Suggest the next LAN for a given prefix. Looks at all products whose LAN
+// matches `^${prefix}\d+$`, finds the largest numeric suffix and returns
+// the same prefix + (max+1), padded to the same width as the longest
+// existing suffix in that prefix (default width 3, e.g. "BA015" → "BA016").
+router.get('/lager/products/suggest-lan', requireLagerSession, async (req, res) => {
+  const prefix = String(req.query.prefix || '').trim().toUpperCase();
+  if (!prefix || !/^[A-Z]+$/.test(prefix)) {
+    return res.status(400).json({ detail: 'Prefix muss aus Buchstaben bestehen (z.B. BA, BB).' });
+  }
+  // Find products with LAN starting with prefix, then a sequence of digits.
+  const re = new RegExp(`^${prefix}(\\d+)$`);
+  const docs = await LagerProductModel.find(
+    { lan: { $regex: re } }, { lan: 1, _id: 0 },
+  ).lean();
+  let maxNum = 0;
+  let pad = 3;
+  for (const d of docs) {
+    const m = re.exec(d.lan || '');
+    if (!m) continue;
+    const n = parseInt(m[1], 10);
+    if (!isNaN(n)) {
+      if (n > maxNum) maxNum = n;
+      if (m[1].length > pad) pad = m[1].length;
+    }
+  }
+  const next = maxNum + 1;
+  const suggestion = prefix + String(next).padStart(pad, '0');
+  res.json({ prefix, suggestion, current_max: maxNum, count: docs.length });
 });
 
 router.get('/lager/products/:id', requireLagerSession, async (req, res) => {
@@ -1153,10 +1193,18 @@ router.post('/lager/products', requireLagerSession, async (req, res) => {
   if (!name) return res.status(400).json({ detail: 'Name fehlt' });
   const folder = await LagerFolderModel.findOne({ id: folder_id }).lean();
   if (!folder) return res.status(400).json({ detail: 'Ordner existiert nicht' });
+  // Validate LAN uniqueness when provided
+  const lanRaw = (typeof req.body.lan === 'string' ? req.body.lan : '').trim();
+  const lan = lanRaw ? lanRaw.toUpperCase() : null;
+  if (lan) {
+    const existing = await LagerProductModel.findOne({ lan }, { id: 1 }).lean();
+    if (existing) return res.status(409).json({ detail: `LAN „${lan}" ist bereits vergeben` });
+  }
   const doc = await LagerProductModel.create({
     id: 'lp_' + Math.random().toString(36).slice(2, 11),
     folder_id,
     name: String(name).trim(),
+    lan,
     image_url: req.body.image_url || null,
     image_thumbnail: req.body.image_thumbnail || null,
     image_public_id: req.body.image_public_id || null,
@@ -1172,12 +1220,23 @@ router.post('/lager/products', requireLagerSession, async (req, res) => {
 });
 
 router.patch('/lager/products/:id', requireLagerSession, async (req, res) => {
-  const allowed = ['name', 'image_url', 'image_thumbnail', 'image_public_id',
+  const allowed = ['name', 'lan', 'image_url', 'image_thumbnail', 'image_public_id',
                    'menge', 'einheit', 'inhalt_pro_stueck', 'zweite_einheit',
                    'minimum_quantity', 'info_text', 'warn_symbols', 'folder_id'];
   const updates = {};
   for (const k of allowed) if (k in (req.body || {})) updates[k] = req.body[k];
   if (!Object.keys(updates).length) return res.status(400).json({ detail: 'Keine Änderungen' });
+  // Normalize + uniqueness-check LAN.
+  if ('lan' in updates) {
+    const v = (typeof updates.lan === 'string' ? updates.lan : '').trim().toUpperCase();
+    updates.lan = v || null;
+    if (updates.lan) {
+      const dup = await LagerProductModel.findOne(
+        { lan: updates.lan, id: { $ne: req.params.id } }, { id: 1 },
+      ).lean();
+      if (dup) return res.status(409).json({ detail: `LAN „${updates.lan}" ist bereits vergeben` });
+    }
+  }
   if ('folder_id' in updates) {
     const f = await LagerFolderModel.findOne({ id: updates.folder_id }).lean();
     if (!f) return res.status(400).json({ detail: 'Ziel-Ordner existiert nicht' });

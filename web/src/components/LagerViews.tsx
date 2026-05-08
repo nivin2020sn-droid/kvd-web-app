@@ -23,6 +23,7 @@ interface LagerProduct {
   id: string;
   folder_id: string;
   name: string;
+  lan?: string | null;
   image_url?: string | null;
   image_thumbnail?: string | null;
   image_public_id?: string | null;
@@ -539,6 +540,13 @@ function ProductCard({ product, onChange, onOpen, onEdit, onDelete }: {
 
       {/* Body — compact */}
       <div className="p-2.5 flex flex-col gap-2 flex-1">
+        {/* LAN badge (above name) */}
+        {product.lan && (
+          <div className="font-mono text-[10px] font-black tracking-[1.5px] inline-block self-start px-1.5 py-0.5 rounded"
+            style={{ backgroundColor: "rgba(167,139,250,0.18)", color: "#A78BFA" }}>
+            {product.lan}
+          </div>
+        )}
         {/* Name (full, multi-line, no truncation) */}
         <button onClick={onOpen} className="text-left w-full block">
           <div className="font-black text-[12.5px] leading-tight break-words" style={{ wordBreak: "break-word" }}>{product.name}</div>
@@ -701,6 +709,8 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
   folder_id: string; existing: LagerProduct | null; onClose: () => void; onSaved: () => void;
 }) {
   const [name, setName]               = useState(existing?.name || "");
+  const [lan, setLan]                 = useState(existing?.lan || "");
+  const [lanBusy, setLanBusy]         = useState(false);
   const [menge, setMenge]             = useState<string>(existing ? String(existing.menge) : "0");
   const [minQty, setMinQty]           = useState<string>(existing && existing.minimum_quantity ? String(existing.minimum_quantity) : "");
   const [einheit, setEinheit]         = useState(existing?.einheit || "Stück");
@@ -738,6 +748,7 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
     setBusy(true); setErr("");
     const body: any = {
       folder_id, name: name.trim(),
+      lan: lan.trim().toUpperCase() || null,
       menge: Number(menge) || 0,
       einheit: einheit.trim() || "Stück",
       minimum_quantity: Number(minQty) || 0,
@@ -788,6 +799,44 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
 
         <Field label="Name">
           <input value={name} onChange={(e) => setName(e.target.value)} className="input-base" />
+        </Field>
+
+        <Field label="LAN — Lager-Nummer (optional)">
+          <div className="flex gap-2 items-stretch">
+            <input
+              value={lan}
+              onChange={(e) => setLan(e.target.value.toUpperCase())}
+              placeholder="z.B. BA001"
+              className="input-base flex-1 font-mono tracking-wider"
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                // Pull a prefix out of the current value (the leading letters).
+                // If empty, ask the user to type at least one letter first.
+                const m = /^([A-Z]+)/.exec(lan.trim().toUpperCase());
+                const prefix = m ? m[1] : "";
+                if (!prefix) {
+                  setErr("Bitte zuerst die Buchstaben (z.B. BB) eintippen, dann Vorschlag.");
+                  return;
+                }
+                setLanBusy(true); setErr("");
+                try {
+                  const r = await lagerApi<{ suggestion: string }>(`/lager/products/suggest-lan?prefix=${encodeURIComponent(prefix)}`);
+                  if (r?.suggestion) setLan(r.suggestion);
+                } catch (e: any) {
+                  setErr(e?.payload?.detail || "Vorschlag fehlgeschlagen");
+                } finally { setLanBusy(false); }
+              }}
+              disabled={lanBusy}
+              className="px-3 rounded-xl border-2 text-xs font-black tracking-wider whitespace-nowrap disabled:opacity-50"
+              style={{ borderColor: "#A78BFA66", backgroundColor: "#A78BFA1A", color: "#A78BFA" }}
+              title="Nächste freie Nummer für diesen Buchstaben-Prefix vorschlagen"
+            >{lanBusy ? "…" : "VORSCHLAG"}</button>
+          </div>
+          <div className="text-[10px] opacity-50 mt-1 leading-snug">
+            Buchstaben-Prefix + Nummer (z.B. BA001, BB014). Wird für die Sortierung im Lager und im Excel-Export verwendet. Muss eindeutig sein.
+          </div>
         </Field>
 
         <div className="grid grid-cols-2 gap-2">
@@ -850,6 +899,12 @@ function ProductDetailModal({ product, onClose, onEdit }: { product: LagerProduc
   return (
     <Modal onClose={onClose} title={product.name} large>
       <div className="space-y-3">
+        {product.lan && (
+          <div className="font-mono text-[12px] font-black tracking-[2px] inline-block px-2.5 py-1 rounded"
+            style={{ backgroundColor: "rgba(167,139,250,0.18)", color: "#A78BFA" }}>
+            {product.lan}
+          </div>
+        )}
         {(product.image_url || product.image_thumbnail) && (
           <img src={product.image_url || product.image_thumbnail || ""} alt="" className="w-full max-h-72 object-contain rounded-xl bg-black/30" />
         )}
