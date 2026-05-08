@@ -226,7 +226,7 @@ function LagerHome() {
       </div>
 
       {/* Catalog grid */}
-      <div className="px-4 sm:px-5 pb-28">
+      <div className="px-4 sm:px-5 pb-32 sm:pb-28">
         {loading ? (
           <div className="text-center opacity-60 mt-10 text-sm">Lade…</div>
         ) : folders.length === 0 && products.length === 0 ? (
@@ -335,13 +335,11 @@ function LagerHome() {
 function SectionHeader({ children }: { children: React.ReactNode }) {
   return <div className="text-[10px] font-black tracking-[3px] opacity-60 mb-2.5 px-1">{children}</div>;
 }
-// 2 cols on phones, 3 on small tablets, 4 on tablets, 5+ on desktop via auto-fit
+// 2 cols on mobile (always), 3 on small tablets, 4 on tablets, 5 on desktop,
+// auto-fit beyond. `auto-rows-fr` keeps cards in the same row equal height.
 function CatalogGrid({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      className="grid gap-3 sm:gap-4"
-      style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 160px), 1fr))" }}
-    >
+    <div className="grid gap-2.5 sm:gap-3.5 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 auto-rows-fr">
       {children}
     </div>
   );
@@ -384,19 +382,19 @@ function FolderCard({ folder, onOpen, onEdit, onDelete }: {
     >
       <button onClick={onOpen} className="block w-full text-left">
         {/* Square image / placeholder */}
-        <div className="relative aspect-square w-full overflow-hidden" style={{ backgroundColor: "rgba(167,139,250,0.10)" }}>
+        <div className="relative aspect-[5/4] w-full overflow-hidden" style={{ backgroundColor: "rgba(167,139,250,0.10)" }}>
           {img ? (
             <img src={img} alt="" className="w-full h-full object-cover" loading="lazy" />
           ) : (
             <FolderPlaceholder />
           )}
           {/* "Ordner" badge */}
-          <span className="absolute top-2 left-2 text-[9px] font-black tracking-[2px] px-1.5 py-0.5 rounded"
+          <span className="absolute top-1.5 left-1.5 text-[9px] font-black tracking-[2px] px-1.5 py-0.5 rounded"
             style={{ backgroundColor: "rgba(167,139,250,0.95)", color: "#0F0F0F" }}>ORDNER</span>
         </div>
         {/* Body — full multi-line name, no truncation */}
-        <div className="p-3">
-          <div className="font-black text-[13px] leading-snug break-words" style={{ wordBreak: "break-word" }}>{folder.name}</div>
+        <div className="p-2.5">
+          <div className="font-black text-[12.5px] leading-tight break-words" style={{ wordBreak: "break-word" }}>{folder.name}</div>
         </div>
       </button>
       {/* ⋯ menu */}
@@ -488,36 +486,36 @@ function ProductCard({ product, onChange, onOpen, onEdit, onDelete }: {
 
   return (
     <div
-      className="relative rounded-2xl overflow-hidden border transition-shadow"
+      className="relative rounded-2xl overflow-hidden border transition-shadow flex flex-col"
       style={{
         borderColor: sst.ring,
         backgroundColor: "rgba(255,255,255,0.03)",
         boxShadow: sst.glow,
       }}
     >
-      {/* Image */}
+      {/* Image — slightly less than square so card is shorter */}
       <button onClick={onOpen} className="block w-full text-left">
-        <div className="relative aspect-square w-full overflow-hidden" style={{ backgroundColor: "rgba(255,255,255,0.04)" }}>
+        <div className="relative aspect-[5/4] w-full overflow-hidden" style={{ backgroundColor: "rgba(255,255,255,0.04)" }}>
           {img ? (
             <img src={img} alt="" className="w-full h-full object-cover" loading="lazy" />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
-              <Icon d={ICONS.box} size={48} color="rgba(255,255,255,0.18)" />
+              <Icon d={ICONS.box} size={40} color="rgba(255,255,255,0.18)" />
             </div>
           )}
           {/* Status badge top-left */}
           {status !== "neutral" && (
             <span
-              className="absolute top-2 left-2 text-[9px] font-black tracking-[2px] px-2 py-1 rounded uppercase"
+              className="absolute top-1.5 left-1.5 text-[9px] font-black tracking-[2px] px-1.5 py-0.5 rounded uppercase"
               style={{ backgroundColor: sst.color, color: "#0F0F0F" }}
             >{sst.label}</span>
           )}
           {/* Warn icons row top-right */}
           {product.warn_symbols && product.warn_symbols.length > 0 && (
-            <div className="absolute top-1.5 right-9 flex gap-1 max-w-[60%] flex-wrap justify-end">
-              {product.warn_symbols.slice(0, 4).map((id) => <WarnIcon key={id} id={id} size={22} />)}
+            <div className="absolute bottom-1.5 left-1.5 flex gap-1 max-w-[90%] flex-wrap">
+              {product.warn_symbols.slice(0, 4).map((id) => <WarnIcon key={id} id={id} size={20} />)}
               {product.warn_symbols.length > 4 && (
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-black/60 text-white">
+                <span className="text-[9px] font-black px-1 py-0.5 rounded bg-black/70 text-white self-center">
                   +{product.warn_symbols.length - 4}
                 </span>
               )}
@@ -527,74 +525,76 @@ function ProductCard({ product, onChange, onOpen, onEdit, onDelete }: {
       </button>
       {/* ⋯ menu */}
       <button onClick={() => setMenu(!menu)}
-        className="absolute top-1.5 right-1.5 w-7 h-7 rounded-full flex items-center justify-center bg-black/40 backdrop-blur"
+        className="absolute top-1 right-1 w-7 h-7 rounded-full flex items-center justify-center bg-black/50 backdrop-blur"
         style={{ color: "#fff" }} aria-label="Menü">⋯</button>
       {menu && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setMenu(false)} />
-          <div className="absolute top-9 right-1.5 z-20 bg-neutral-900 border border-white/15 rounded-xl shadow-2xl py-1 w-36">
+          <div className="absolute top-9 right-1 z-20 bg-neutral-900 border border-white/15 rounded-xl shadow-2xl py-1 w-36">
             <button onClick={() => { setMenu(false); onEdit(); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/5">Bearbeiten</button>
             <button onClick={() => { setMenu(false); onDelete(); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/5" style={{ color: "#FF6B6B" }}>Löschen</button>
           </div>
         </>
       )}
 
-      {/* Body */}
-      <div className="p-3">
+      {/* Body — compact */}
+      <div className="p-2.5 flex flex-col gap-2 flex-1">
+        {/* Name (full, multi-line, no truncation) */}
         <button onClick={onOpen} className="text-left w-full block">
-          <div className="font-black text-[13px] leading-snug break-words mb-2" style={{ wordBreak: "break-word" }}>{product.name}</div>
+          <div className="font-black text-[12.5px] leading-tight break-words" style={{ wordBreak: "break-word" }}>{product.name}</div>
         </button>
 
-        {/* Qty row + unit */}
-        <div className="flex items-center gap-1.5">
+        {/* Quantity + unit (prominent) */}
+        <div>
+          <div className="flex items-baseline gap-1.5 leading-none">
+            {editingQty ? (
+              <input
+                autoFocus
+                type="number"
+                inputMode="numeric"
+                value={qtyDraft}
+                onChange={(e) => setQtyDraft(e.target.value)}
+                onBlur={() => {
+                  const v = parseFloat(qtyDraft);
+                  if (!isNaN(v) && v >= 0) setExact(v); else setEditingQty(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  if (e.key === "Escape") setEditingQty(false);
+                }}
+                className="w-16 text-left text-xl font-black bg-black/40 border border-white/20 rounded-md py-0.5 px-1 text-white"
+              />
+            ) : (
+              <button
+                onClick={() => { setQtyDraft(String(product.menge)); setEditingQty(true); }}
+                className="font-black text-xl active:opacity-70"
+                style={{ color: sst.color }}
+              >{product.menge}</button>
+            )}
+            <span className="font-bold text-[13px] opacity-90">{product.einheit}</span>
+          </div>
+          {total && (
+            <div className="text-[11px] opacity-65 mt-0.5">≈ {total}</div>
+          )}
+        </div>
+
+        {/* +/− row at the bottom */}
+        <div className="flex items-center gap-1.5 mt-auto">
           <button
             onClick={() => adjust(-1)}
             disabled={busy || product.menge <= 0}
-            className="w-9 h-9 rounded-lg font-black text-lg flex items-center justify-center disabled:opacity-30 active:scale-95"
-            style={{ backgroundColor: "rgba(255,77,79,0.14)", color: "#FF4D4F" }}
+            className="flex-1 h-8 rounded-lg font-black text-base flex items-center justify-center disabled:opacity-30 active:scale-95"
+            style={{ backgroundColor: "rgba(255,77,79,0.15)", color: "#FF4D4F" }}
             aria-label="weniger"
           >−</button>
-          {editingQty ? (
-            <input
-              autoFocus
-              type="number"
-              inputMode="numeric"
-              value={qtyDraft}
-              onChange={(e) => setQtyDraft(e.target.value)}
-              onBlur={() => {
-                const v = parseFloat(qtyDraft);
-                if (!isNaN(v) && v >= 0) setExact(v); else setEditingQty(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                if (e.key === "Escape") setEditingQty(false);
-              }}
-              className="flex-1 min-w-0 text-center text-base font-black bg-black/40 border border-white/20 rounded-lg py-1 px-1"
-            />
-          ) : (
-            <button
-              onClick={() => { setQtyDraft(String(product.menge)); setEditingQty(true); }}
-              className="flex-1 min-w-0 text-center font-black text-base px-1 py-1.5 rounded-lg active:bg-white/10"
-              style={{ color: sst.color }}
-            >{product.menge}</button>
-          )}
           <button
             onClick={() => adjust(1)}
             disabled={busy}
-            className="w-9 h-9 rounded-lg font-black text-lg flex items-center justify-center disabled:opacity-30 active:scale-95"
-            style={{ backgroundColor: "rgba(0,230,118,0.16)", color: "#00E676" }}
+            className="flex-1 h-8 rounded-lg font-black text-base flex items-center justify-center disabled:opacity-30 active:scale-95"
+            style={{ backgroundColor: "rgba(0,230,118,0.18)", color: "#00E676" }}
             aria-label="mehr"
           >+</button>
         </div>
-        <div className="mt-1.5 flex items-baseline gap-1.5 text-[11px] opacity-75">
-          <span className="font-bold">{product.einheit}</span>
-          {total && <span className="opacity-60">≈ {total}</span>}
-        </div>
-        {Number(product.minimum_quantity) > 0 && (
-          <div className="text-[10px] opacity-50 mt-0.5">
-            Mindestmenge: {product.minimum_quantity}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -654,22 +654,35 @@ function FolderEditModal({ parent_id, existing, onClose, onSaved }: {
   return (
     <Modal onClose={onClose} title={existing ? "Ordner bearbeiten" : "Neuer Ordner"} large>
       <div className="space-y-3">
-        {/* Image picker */}
-        <div className="flex gap-3 items-center">
-          <button onClick={() => fileRef.current?.click()}
-            className="w-24 h-24 rounded-xl border-2 border-dashed border-white/20 flex items-center justify-center overflow-hidden bg-black/30">
-            {imageThumb || imageUrl
-              ? <img src={imageThumb || imageUrl} alt="" className="w-full h-full object-cover" />
-              : <Icon d={ICONS.folder} size={32} color="rgba(255,255,255,0.4)" />}
-          </button>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickImage(f); }} />
-          <div className="flex-1 text-xs opacity-70 leading-snug">
-            {uploading ? "Lade Bild hoch…" : (imageUrl ? "Tippen zum Ändern" : "Tippen zum Hochladen (optional)")}
+        {/* Image picker — visible upload, change, and remove actions */}
+        <Field label="Ordnerbild (optional)">
+          <div className="flex gap-3 items-stretch">
+            <button onClick={() => fileRef.current?.click()}
+              className="w-24 h-24 rounded-xl border-2 border-dashed border-white/25 flex items-center justify-center overflow-hidden bg-black/30 shrink-0">
+              {imageThumb || imageUrl
+                ? <img src={imageThumb || imageUrl} alt="" className="w-full h-full object-cover" />
+                : <Icon d={ICONS.folder} size={32} color="rgba(255,255,255,0.4)" />}
+            </button>
+            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickImage(f); }} />
+            <div className="flex flex-col gap-1.5 flex-1 justify-center min-w-0">
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="px-3 py-2 rounded-lg text-xs font-black tracking-wider border border-white/20 bg-white/5 text-white active:bg-white/10 disabled:opacity-50 text-left"
+              >{uploading ? "Lädt…" : (imageUrl ? "BILD ÄNDERN" : "BILD HOCHLADEN")}</button>
+              {(imageUrl || imageThumb) && (
+                <button
+                  onClick={() => { setImageUrl(""); setImageThumb(""); setImagePid(""); }}
+                  className="px-3 py-2 rounded-lg text-xs font-black tracking-wider border text-left"
+                  style={{ borderColor: "#FF6B6B66", color: "#FF6B6B", backgroundColor: "#FF6B6B14" }}
+                >BILD ENTFERNEN</button>
+              )}
+            </div>
           </div>
-        </div>
+        </Field>
 
         <Field label="Name">
-          <input value={name} onChange={(e) => setName(e.target.value)} className="input-style" autoFocus />
+          <input value={name} onChange={(e) => setName(e.target.value)} className="input-base" autoFocus />
         </Field>
         {err && <div className="text-xs" style={{ color: "#FF6B6B" }}>{err}</div>}
         <div className="flex gap-2 pt-2">
@@ -747,34 +760,47 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
   return (
     <Modal onClose={onClose} title={existing ? "Produkt bearbeiten" : "Neues Produkt"} large>
       <div className="space-y-3">
-        <div className="flex gap-3 items-center">
-          <button onClick={() => fileRef.current?.click()}
-            className="w-24 h-24 rounded-xl border-2 border-dashed border-white/20 flex items-center justify-center overflow-hidden bg-black/30">
-            {imageThumb || imageUrl
-              ? <img src={imageThumb || imageUrl} alt="" className="w-full h-full object-cover" />
-              : <Icon d={ICONS.box} size={32} color="rgba(255,255,255,0.4)" />}
-          </button>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickImage(f); }} />
-          <div className="flex-1 text-xs opacity-70 leading-snug">
-            {uploading ? "Lade Bild hoch…" : (imageUrl ? "Tippen zum Ändern" : "Tippen zum Hochladen")}
+        <Field label="Produktbild">
+          <div className="flex gap-3 items-stretch">
+            <button onClick={() => fileRef.current?.click()}
+              className="w-24 h-24 rounded-xl border-2 border-dashed border-white/25 flex items-center justify-center overflow-hidden bg-black/30 shrink-0">
+              {imageThumb || imageUrl
+                ? <img src={imageThumb || imageUrl} alt="" className="w-full h-full object-cover" />
+                : <Icon d={ICONS.box} size={32} color="rgba(255,255,255,0.4)" />}
+            </button>
+            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickImage(f); }} />
+            <div className="flex flex-col gap-1.5 flex-1 justify-center min-w-0">
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="px-3 py-2 rounded-lg text-xs font-black tracking-wider border border-white/20 bg-white/5 text-white active:bg-white/10 disabled:opacity-50 text-left"
+              >{uploading ? "Lädt…" : (imageUrl ? "BILD ÄNDERN" : "BILD HOCHLADEN")}</button>
+              {(imageUrl || imageThumb) && (
+                <button
+                  onClick={() => { setImageUrl(""); setImageThumb(""); setImagePid(""); }}
+                  className="px-3 py-2 rounded-lg text-xs font-black tracking-wider border text-left"
+                  style={{ borderColor: "#FF6B6B66", color: "#FF6B6B", backgroundColor: "#FF6B6B14" }}
+                >BILD ENTFERNEN</button>
+              )}
+            </div>
           </div>
-        </div>
+        </Field>
 
         <Field label="Name">
-          <input value={name} onChange={(e) => setName(e.target.value)} className="input-style" />
+          <input value={name} onChange={(e) => setName(e.target.value)} className="input-base" />
         </Field>
 
         <div className="grid grid-cols-2 gap-2">
           <Field label="Menge">
-            <input type="number" inputMode="decimal" value={menge} onChange={(e) => setMenge(e.target.value)} className="input-style" />
+            <input type="number" inputMode="decimal" value={menge} onChange={(e) => setMenge(e.target.value)} className="input-base" />
           </Field>
           <Field label="Einheit">
-            <input value={einheit} onChange={(e) => setEinheit(e.target.value)} placeholder="Stück" className="input-style" />
+            <input value={einheit} onChange={(e) => setEinheit(e.target.value)} placeholder="Stück" className="input-base" />
           </Field>
         </div>
 
         <Field label="Mindestmenge (optional)">
-          <input type="number" inputMode="decimal" value={minQty} onChange={(e) => setMinQty(e.target.value)} placeholder="0 = keine" className="input-style" />
+          <input type="number" inputMode="decimal" value={minQty} onChange={(e) => setMinQty(e.target.value)} placeholder="0 = keine" className="input-base" />
           <div className="text-[10px] opacity-50 mt-1">
             Wird das Produkt unter diese Menge fallen, leuchtet die Karte orange. Bei 0 oder leer rot.
           </div>
@@ -788,17 +814,17 @@ function ProductEditModal({ folder_id, existing, onClose, onSaved }: {
           {hasSecondary && (
             <div className="grid grid-cols-2 gap-2 mt-2">
               <Field label="Inhalt pro Stück">
-                <input type="number" inputMode="decimal" value={inhalt} onChange={(e) => setInhalt(e.target.value)} className="input-style" />
+                <input type="number" inputMode="decimal" value={inhalt} onChange={(e) => setInhalt(e.target.value)} className="input-base" />
               </Field>
               <Field label="Einheit">
-                <input value={zweite} onChange={(e) => setZweite(e.target.value)} placeholder="Liter" className="input-style" />
+                <input value={zweite} onChange={(e) => setZweite(e.target.value)} placeholder="Liter" className="input-base" />
               </Field>
             </div>
           )}
         </div>
 
         <Field label="Produktinformationen (optional)">
-          <textarea value={info} onChange={(e) => setInfo(e.target.value)} rows={3} className="input-style resize-none" />
+          <textarea value={info} onChange={(e) => setInfo(e.target.value)} rows={3} className="input-base resize-none py-3 h-auto" />
         </Field>
 
         <Field label={`Warnsymbole (${warnIds.length} ausgewählt)`}>
