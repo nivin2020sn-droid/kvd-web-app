@@ -115,6 +115,10 @@ const TaskSchema = new mongoose.Schema({
   // we clear both flags.
   continue_tomorrow: { type: Boolean, default: false },
   next_work_date: { type: String, default: null },
+  // Audit trail of every automatic rollover the server performed for this
+  // task. Each entry: { from, to, reason, ts, status }. Capped at last 50
+  // entries per task. Lets the UI explain "why is this task today?".
+  rollover_log: { type: Array, default: [] },
   // Photos attached to this task. Binary assets live in Cloudinary; MongoDB
   // stores metadata + URLs only.
   photos: {
@@ -390,6 +394,8 @@ router.post('/persons/:id/verify-pin', async (req, res) => {
 // Tasks
 router.get('/tasks/today', async (req, res) => {
   const today = todayStr();
+  // Catch up: roll any open / overdue tasks forward to today FIRST, then list.
+  try { await autoRolloverOpenTasks(today); } catch (e) { console.error('autoRolloverOpenTasks:', e); }
   // Match: (task_date==today) OR (continuation from yesterday: continue_tomorrow && next_work_date==today)
   res.json(await TaskModel.find({
     archived: { $ne: true },
@@ -404,6 +410,11 @@ router.get('/tasks/today', async (req, res) => {
 router.get('/tasks/by-date', async (req, res) => {
   const date = String(req.query.date || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: 'date muss YYYY-MM-DD sein' });
+  // If the caller is asking for TODAY, run the auto-rollover first so that
+  // any overdue open tasks (Feierabend missed, holidays etc.) appear today.
+  if (date === todayStr()) {
+    try { await autoRolloverOpenTasks(date); } catch (e) { console.error('autoRolloverOpenTasks:', e); }
+  }
   res.json(await TaskModel.find({
     archived: { $ne: true },
     $or: [
@@ -420,6 +431,9 @@ router.get('/tasks', async (req, res) => {
   const date = String(req.query.date || '').trim();
   if (date) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: 'date muss YYYY-MM-DD sein' });
+    if (date === todayStr()) {
+      try { await autoRolloverOpenTasks(date); } catch (e) { console.error('autoRolloverOpenTasks:', e); }
+    }
     return res.json(await TaskModel.find({
       archived: { $ne: true },
       $or: [
@@ -429,6 +443,27 @@ router.get('/tasks', async (req, res) => {
     }, { _id: 0 }).lean());
   }
   res.json(await TaskModel.find({ archived: { $ne: true } }, { _id: 0 }).sort({ task_date: -1 }).lean());
+});
+
+// --- Rollover admin / debug endpoints ---
+// Manually trigger the rollover (used by the "Offene Aufgaben einsammeln"
+// button in Admin-Einstellungen). Returns the list of decisions.
+router.post('/tasks/admin/rollover-open', requireAdmin, async (req, res) => {
+  const today = todayStr();
+  const log = await autoRolloverOpenTasks(today);
+  res.json({
+    ran_at: new Date().toISOString(),
+    today,
+    moved: log.filter((x) => x.action === 'rollover').length,
+    skipped: log.filter((x) => x.action === 'skip').length,
+    log,
+  });
+});
+
+// Read-only log of the most recent rollover decisions (in-memory ring buffer,
+// last ~200 entries). Helps debugging "why did/didn't task X move?".
+router.get('/tasks/debug/rollover-log', async (req, res) => {
+  res.json({ count: recentRolloverEvents.length, events: recentRolloverEvents });
 });
 
 // Distinct list of dates that have tasks (used by Admin date-jump UI).
@@ -1803,7 +1838,95 @@ wss.on('connection', (ws) => {
 // Idempotent: läuft täglich beim Restart, bewirkt aber nichts wenn keine
 // archivierten Aufgaben mehr vorhanden sind.
 // =====================================================================
-let lastHealResult = { ran_at: null, restored_count: 0, restored: [] };
+// AUTO-ROLLOVER for OPEN tasks
+// ---------------------------------------------------------------------
+// Problem this fixes:
+//   - A task with `continue_tomorrow=true, next_work_date=Sunday` only
+//     appears when the day-view asks for Sunday. If the app is never
+//     opened on Sunday (holiday / weekend), the task silently drops out
+//     of every day-view from Monday onwards.
+//   - Similarly, a regular task created on Friday for Friday but never
+//     finished/feierabend'd would only show on Friday.
+//
+// Rule (user-stated):
+//   "Jede Aufgabe mit status != finished darf NIE verschwinden — sie
+//    wird auf den heutigen Tag (oder den nächsten Arbeitstag) verschoben."
+//
+// The function below performs the actual rollover. We call it every time
+// the frontend asks for `today`'s tasks. We also expose a manual admin
+// endpoint to run it on demand ("Offene Aufgaben einsammeln").
+// =====================================================================
+let recentRolloverEvents = []; // ring-buffer, last ~200 decisions
+function pushRolloverLog(entry) {
+  recentRolloverEvents.unshift(entry);
+  if (recentRolloverEvents.length > 200) recentRolloverEvents.length = 200;
+}
+
+async function autoRolloverOpenTasks(today) {
+  const log = [];
+  // Candidates: non-archived tasks whose "target day" is in the past.
+  //   • Feierabend-deferred: continue_tomorrow=true AND next_work_date<today
+  //   • Plain overdue:       continue_tomorrow!=true AND task_date<today
+  const candidates = await TaskModel.find({
+    archived: { $ne: true },
+    $or: [
+      { continue_tomorrow: true, next_work_date: { $lt: today, $ne: null } },
+      { continue_tomorrow: { $ne: true }, task_date: { $lt: today } },
+    ],
+  }, { _id: 0 }).lean();
+
+  if (candidates.length === 0) return log;
+
+  // Look up workflow status for the whole batch in ONE query.
+  const ids = candidates.map((c) => c.id);
+  const wfs = await WorkflowModel.find({ task_id: { $in: ids } }, { task_id: 1, status: 1 }).lean();
+  const wfStatus = Object.fromEntries(wfs.map((w) => [w.task_id, w.status || 'idle']));
+
+  for (const t of candidates) {
+    const status = wfStatus[t.id] || 'idle';
+    const prevTarget = t.continue_tomorrow ? t.next_work_date : t.task_date;
+    // Rule: if the workflow is already "finished" the task is COMPLETED —
+    // it must NOT be rolled over. It stays on its original day for history.
+    if (status === 'finished') {
+      const skipEntry = {
+        ts: new Date().toISOString(),
+        id: t.id, task_type: t.task_type,
+        action: 'skip', reason: 'status=finished — Aufgabe ist abgeschlossen',
+        from: prevTarget, to: null, status,
+      };
+      log.push(skipEntry);
+      pushRolloverLog(skipEntry);
+      continue;
+    }
+    // Otherwise (idle / prepared / running / paused / deferred) → roll forward.
+    const reason = status === 'deferred'
+      ? `Feierabend-Datum ${prevTarget} verpasst (kein App-Aufruf an dem Tag)`
+      : `Aufgabe vom ${prevTarget} ist nicht abgeschlossen`;
+    const newEntry = { from: prevTarget, to: today, reason, ts: new Date().toISOString(), status };
+    // Append rollover_log on the task, capped at 50 entries.
+    await TaskModel.updateOne(
+      { id: t.id },
+      {
+        $set: { continue_tomorrow: true, next_work_date: today },
+        $push: { rollover_log: { $each: [newEntry], $slice: -50 } },
+      },
+    );
+    const logEntry = {
+      ts: newEntry.ts,
+      id: t.id, task_type: t.task_type,
+      action: 'rollover', reason, from: prevTarget, to: today, status,
+    };
+    log.push(logEntry);
+    pushRolloverLog(logEntry);
+    console.log(
+      `🔁 auto-rollover  id=${t.id}  type="${t.task_type || '—'}"  ` +
+      `${prevTarget} → ${today}  (status=${status}; reason=${reason})`,
+    );
+  }
+  return log;
+}
+
+
 async function autoHealArchivedTasks() {
   const startedAt = new Date().toISOString();
   const archivedTasks = await TaskModel.find(

@@ -1867,6 +1867,7 @@ function AdminSettings() {
           <button onClick={savePw} className="btn-primary h-12">SPEICHERN</button>
         </div>
         <LagerPinAdminSection />
+        <RolloverAdminSection />
         <div>
           <div className="section-label mb-3">App-Update</div>
           <div className="flex justify-between items-center bg-surface-card border border-surface-border p-4 mb-3 rounded-xl">
@@ -2749,6 +2750,86 @@ function LagerPinAdminSection() {
       <button onClick={save} disabled={busy || pin.length < 4} className="btn-primary h-12 disabled:opacity-50">
         {busy ? "..." : "PIN SPEICHERN"}
       </button>
+    </div>
+  );
+}
+
+// =====================================================================
+// RolloverAdminSection — "Offene Aufgaben einsammeln" button.
+// Calls POST /tasks/admin/rollover-open which scans for any non-archived
+// non-finished task whose target date is in the past and forwards it to
+// today, with a detailed reason log returned to the UI.
+// =====================================================================
+interface RolloverEntry {
+  ts: string;
+  id: string;
+  task_type: string;
+  action: "rollover" | "skip";
+  reason: string;
+  from?: string | null;
+  to?: string | null;
+  status: string;
+}
+function RolloverAdminSection() {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ moved: number; skipped: number; log: RolloverEntry[] } | null>(null);
+  const [err, setErr] = useState("");
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true); setErr(""); setResult(null);
+    try {
+      const r = await api<{ moved: number; skipped: number; log: RolloverEntry[] }>(
+        "/tasks/admin/rollover-open", { method: "POST", auth: true, body: {} },
+      );
+      setResult(r);
+    } catch (e: any) {
+      setErr(e?.message || "Fehler beim Einsammeln");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div>
+      <div className="section-label mb-3">Offene Aufgaben einsammeln</div>
+      <p className="text-xs text-white/55 mb-3 leading-snug">
+        Sucht alle nicht abgeschlossenen Aufgaben, deren Datum in der
+        Vergangenheit liegt (z.B. wegen verpasstem Feierabend-Termin oder weil
+        die App an einem Tag nicht geöffnet wurde) und schiebt sie auf
+        <span className="font-black"> heute </span>
+        — niemals werden Aufgaben gelöscht. Aufgaben mit Status <span className="font-black">„Beendet"</span> bleiben auf ihrem ursprünglichen Tag.
+      </p>
+      <button onClick={run} disabled={busy} className="btn-primary h-12 disabled:opacity-50 mb-3">
+        {busy ? "Sammle…" : "OFFENE AUFGABEN EINSAMMELN"}
+      </button>
+      {err && <div className="text-xs p-2 rounded-lg border" style={{ borderColor: "#FF6B6B44", backgroundColor: "#FF6B6B14", color: "#FF6B6B" }}>{err}</div>}
+      {result && (
+        <div className="space-y-2">
+          <div
+            className="text-xs p-2.5 rounded-lg border"
+            style={{ borderColor: "#00E67644", backgroundColor: "#00E6761A", color: "#00E676" }}
+          >
+            <span className="font-black">{result.moved}</span> Aufgabe(n) auf heute verschoben
+            {result.skipped > 0 && <> · <span className="font-black">{result.skipped}</span> übersprungen (abgeschlossen)</>}
+          </div>
+          {result.log.length > 0 && (
+            <details className="rounded-lg border border-white/10 p-2">
+              <summary className="text-xs font-bold opacity-80 cursor-pointer select-none">Details ({result.log.length})</summary>
+              <div className="mt-2 space-y-1.5">
+                {result.log.map((e, i) => (
+                  <div key={i} className="text-[11px] leading-snug border-l-2 pl-2 py-0.5"
+                    style={{ borderColor: e.action === "rollover" ? "#A78BFA" : "rgba(255,255,255,0.2)" }}>
+                    <div className="font-bold" style={{ color: e.action === "rollover" ? "#A78BFA" : "rgba(255,255,255,0.6)" }}>
+                      {e.action === "rollover" ? `🔁 ${e.from || "?"} → ${e.to}` : "⏭ übersprungen"}
+                    </div>
+                    <div className="opacity-90">{e.task_type}</div>
+                    <div className="opacity-60">{e.reason} (status={e.status})</div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
     </div>
   );
 }
