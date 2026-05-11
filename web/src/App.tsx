@@ -516,6 +516,45 @@ function AdminHome() {
             </div>
           );
           return activeTasks.map((t) => {
+          // ===== STUB: task was here historically but has been rolled forward =====
+          // Render a compact, read-only "Weitergeschoben auf …" placeholder so
+          // the past day is NEVER empty. No workflow controls, no expand.
+          if (t._is_weitergeschoben) {
+            const movedTo = t._weitergeschoben_auf || t._current_live_date || "";
+            return (
+              <div
+                key={t.id}
+                className="rounded-xl px-3.5 py-3 opacity-85"
+                style={{
+                  backgroundColor: "rgba(167,139,250,0.06)",
+                  border: "1px dashed rgba(167,139,250,0.45)",
+                }}
+              >
+                <div className="flex items-start gap-2">
+                  <div className="text-[16px] leading-none mt-0.5" aria-hidden>↪</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-extrabold text-[14px] truncate" style={{ color: "#C4B5FD" }}>
+                      {t.task_type} <span className="opacity-50">·</span> Haus {t.haus}
+                    </div>
+                    <div className="text-[11px] opacity-55 truncate mt-0.5">
+                      {t.person_ids.map(personName).join(" · ") || "Keine Personen"}
+                    </div>
+                    <div className="mt-1.5">
+                      <span
+                        className="text-[10px] font-black tracking-wide px-1.5 py-1 rounded inline-block"
+                        style={{ backgroundColor: "rgba(167,139,250,0.18)", color: "#C4B5FD" }}
+                      >
+                        ↪ WEITERGESCHOBEN AUF {movedTo ? formatGermanDateShort(movedTo) : "?"}
+                      </span>
+                    </div>
+                    {t.description && (
+                      <div className="text-[11px] opacity-50 italic mt-1.5 line-clamp-2">{t.description}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          }
           const wf = workflows[t.id] || getWorkflow(t.id);
           const wfStatus: WorkflowStatus = wf.status;
           const isRunning = wfStatus === "running";
@@ -2299,6 +2338,47 @@ function Tablet() {
               </div>
             </div>
           ) : tasks.map((t) => {
+            // ===== STUB: historical placeholder for a task that moved =====
+            if (t._is_weitergeschoben) {
+              const movedTo = t._weitergeschoben_auf || t._current_live_date || "";
+              const personsLabel = t.person_ids.map(pn).join(" · ") || "Keine Personen";
+              return (
+                <div
+                  key={t.id}
+                  className="rounded-2xl px-4 py-3 shadow-md"
+                  style={{
+                    backgroundColor: dark ? "rgba(167,139,250,0.08)" : "rgba(167,139,250,0.10)",
+                    border: `1px dashed ${dark ? "rgba(167,139,250,0.55)" : "rgba(139,92,246,0.55)"}`,
+                    color: dark ? "#fff" : "#000",
+                    maxWidth: "100%",
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="text-2xl leading-none mt-1" aria-hidden>↪</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-extrabold text-[16px]" style={{ color: dark ? "#C4B5FD" : "#6D28D9" }}>
+                        {t.task_type} <span style={{ color: textMuted }}>·</span> Haus {t.haus}
+                      </div>
+                      <div className="text-sm italic mt-0.5" style={{ color: textMuted }}>{personsLabel}</div>
+                      <div className="mt-2">
+                        <span
+                          className="text-[11px] font-black tracking-wide px-2 py-1 rounded inline-block"
+                          style={{
+                            backgroundColor: dark ? "rgba(167,139,250,0.22)" : "rgba(167,139,250,0.20)",
+                            color: dark ? "#C4B5FD" : "#6D28D9",
+                          }}
+                        >
+                          ↪ WEITERGESCHOBEN AUF {movedTo ? formatGermanDateShort(movedTo) : "?"}
+                        </span>
+                      </div>
+                      {t.description && (
+                        <div className="text-xs italic mt-2 line-clamp-2" style={{ color: textMuted }}>{t.description}</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
             const wf = workflows[t.id] || getWorkflow(t.id);
             const wfStatus: WorkflowStatus = wf.status;
             const allowed = allowedActions(wfStatus);
@@ -2755,10 +2835,13 @@ function LagerPinAdminSection() {
 }
 
 // =====================================================================
-// RolloverAdminSection — "Offene Aufgaben einsammeln" button.
-// Calls POST /tasks/admin/rollover-open which scans for any non-archived
-// non-finished task whose target date is in the past and forwards it to
-// today, with a detailed reason log returned to the UI.
+// RolloverAdminSection — two recovery buttons for the daily task lifecycle:
+//   1. "OFFENE AUFGABEN EINSAMMELN"  → POST /tasks/admin/rollover-open
+//      Forwards every non-finished overdue task to TODAY (and leaves a
+//      "Weitergeschoben auf …" stub on the past day).
+//   2. "REBUILD TASK HISTORY"        → POST /tasks/admin/rebuild-history
+//      Walks every task and patches missing original_date / completed_date /
+//      rollover_log entries — idempotent recovery for legacy data.
 // =====================================================================
 interface RolloverEntry {
   ts: string;
@@ -2770,10 +2853,21 @@ interface RolloverEntry {
   to?: string | null;
   status: string;
 }
+interface RebuildChange {
+  id: string;
+  task_type: string;
+  original_date_added: string | null;
+  completed_date_added: string | null;
+  rollover_log_synth: number;
+}
 function RolloverAdminSection() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ moved: number; skipped: number; log: RolloverEntry[] } | null>(null);
   const [err, setErr] = useState("");
+
+  const [rebuildBusy, setRebuildBusy] = useState(false);
+  const [rebuildResult, setRebuildResult] = useState<{ scanned: number; patched: number; changes: RebuildChange[] } | null>(null);
+  const [rebuildErr, setRebuildErr] = useState("");
 
   const run = async () => {
     if (busy) return;
@@ -2788,48 +2882,120 @@ function RolloverAdminSection() {
     } finally { setBusy(false); }
   };
 
+  const runRebuild = async () => {
+    if (rebuildBusy) return;
+    if (!confirm(
+      "REBUILD TASK HISTORY:\n\n" +
+      "Repariert fehlende Verlaufsspuren bei Aufgaben:\n" +
+      "  • original_date (ursprünglicher Tag)\n" +
+      "  • completed_date (Tag des Beendens)\n" +
+      "  • rollover_log (Verschiebungs-Verlauf)\n\n" +
+      "Aufgaben werden NICHT gelöscht oder geändert — nur der historische " +
+      "Verlauf wird vervollständigt.\nFortfahren?"
+    )) return;
+    setRebuildBusy(true); setRebuildErr(""); setRebuildResult(null);
+    try {
+      const r = await api<{ scanned: number; patched: number; changes: RebuildChange[] }>(
+        "/tasks/admin/rebuild-history", { method: "POST", auth: true, body: {} },
+      );
+      setRebuildResult(r);
+    } catch (e: any) {
+      setRebuildErr(e?.message || "Fehler beim Rebuild");
+    } finally { setRebuildBusy(false); }
+  };
+
   return (
-    <div>
-      <div className="section-label mb-3">Offene Aufgaben einsammeln</div>
-      <p className="text-xs text-white/55 mb-3 leading-snug">
-        Sucht alle nicht abgeschlossenen Aufgaben, deren Datum in der
-        Vergangenheit liegt (z.B. wegen verpasstem Feierabend-Termin oder weil
-        die App an einem Tag nicht geöffnet wurde) und schiebt sie auf
-        <span className="font-black"> heute </span>
-        — niemals werden Aufgaben gelöscht. Aufgaben mit Status <span className="font-black">„Beendet"</span> bleiben auf ihrem ursprünglichen Tag.
-      </p>
-      <button onClick={run} disabled={busy} className="btn-primary h-12 disabled:opacity-50 mb-3">
-        {busy ? "Sammle…" : "OFFENE AUFGABEN EINSAMMELN"}
-      </button>
-      {err && <div className="text-xs p-2 rounded-lg border" style={{ borderColor: "#FF6B6B44", backgroundColor: "#FF6B6B14", color: "#FF6B6B" }}>{err}</div>}
-      {result && (
-        <div className="space-y-2">
-          <div
-            className="text-xs p-2.5 rounded-lg border"
-            style={{ borderColor: "#00E67644", backgroundColor: "#00E6761A", color: "#00E676" }}
-          >
-            <span className="font-black">{result.moved}</span> Aufgabe(n) auf heute verschoben
-            {result.skipped > 0 && <> · <span className="font-black">{result.skipped}</span> übersprungen (abgeschlossen)</>}
-          </div>
-          {result.log.length > 0 && (
-            <details className="rounded-lg border border-white/10 p-2">
-              <summary className="text-xs font-bold opacity-80 cursor-pointer select-none">Details ({result.log.length})</summary>
-              <div className="mt-2 space-y-1.5">
-                {result.log.map((e, i) => (
-                  <div key={i} className="text-[11px] leading-snug border-l-2 pl-2 py-0.5"
-                    style={{ borderColor: e.action === "rollover" ? "#A78BFA" : "rgba(255,255,255,0.2)" }}>
-                    <div className="font-bold" style={{ color: e.action === "rollover" ? "#A78BFA" : "rgba(255,255,255,0.6)" }}>
-                      {e.action === "rollover" ? `🔁 ${e.from || "?"} → ${e.to}` : "⏭ übersprungen"}
+    <div className="space-y-5">
+      {/* === Block 1: Offene Aufgaben einsammeln === */}
+      <div>
+        <div className="section-label mb-3">Offene Aufgaben einsammeln</div>
+        <p className="text-xs text-white/55 mb-3 leading-snug">
+          Sucht alle nicht abgeschlossenen Aufgaben, deren Datum in der
+          Vergangenheit liegt (z.B. wegen verpasstem Feierabend-Termin oder weil
+          die App an einem Tag nicht geöffnet wurde) und schiebt sie auf
+          <span className="font-black"> heute </span>
+          — niemals werden Aufgaben gelöscht. Aufgaben mit Status <span className="font-black">„Beendet"</span> bleiben auf ihrem ursprünglichen Tag.
+        </p>
+        <button onClick={run} disabled={busy} className="btn-primary h-12 disabled:opacity-50 mb-3">
+          {busy ? "Sammle…" : "OFFENE AUFGABEN EINSAMMELN"}
+        </button>
+        {err && <div className="text-xs p-2 rounded-lg border" style={{ borderColor: "#FF6B6B44", backgroundColor: "#FF6B6B14", color: "#FF6B6B" }}>{err}</div>}
+        {result && (
+          <div className="space-y-2">
+            <div
+              className="text-xs p-2.5 rounded-lg border"
+              style={{ borderColor: "#00E67644", backgroundColor: "#00E6761A", color: "#00E676" }}
+            >
+              <span className="font-black">{result.moved}</span> Aufgabe(n) auf heute verschoben
+              {result.skipped > 0 && <> · <span className="font-black">{result.skipped}</span> übersprungen (abgeschlossen)</>}
+            </div>
+            {result.log.length > 0 && (
+              <details className="rounded-lg border border-white/10 p-2">
+                <summary className="text-xs font-bold opacity-80 cursor-pointer select-none">Details ({result.log.length})</summary>
+                <div className="mt-2 space-y-1.5">
+                  {result.log.map((e, i) => (
+                    <div key={i} className="text-[11px] leading-snug border-l-2 pl-2 py-0.5"
+                      style={{ borderColor: e.action === "rollover" ? "#A78BFA" : "rgba(255,255,255,0.2)" }}>
+                      <div className="font-bold" style={{ color: e.action === "rollover" ? "#A78BFA" : "rgba(255,255,255,0.6)" }}>
+                        {e.action === "rollover" ? `🔁 ${e.from || "?"} → ${e.to}` : "⏭ übersprungen"}
+                      </div>
+                      <div className="opacity-90">{e.task_type}</div>
+                      <div className="opacity-60">{e.reason} (status={e.status})</div>
                     </div>
-                    <div className="opacity-90">{e.task_type}</div>
-                    <div className="opacity-60">{e.reason} (status={e.status})</div>
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
-        </div>
-      )}
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* === Block 2: Rebuild Task History === */}
+      <div className="pt-4 border-t border-white/10">
+        <div className="section-label mb-3">Aufgaben-Verlauf wiederherstellen</div>
+        <p className="text-xs text-white/55 mb-3 leading-snug">
+          Repariert <span className="font-black">historische Spuren</span> von Aufgaben:
+          fehlende <span className="font-mono text-white/75">original_date</span>,{" "}
+          <span className="font-mono text-white/75">completed_date</span> und{" "}
+          <span className="font-mono text-white/75">rollover_log</span>-Einträge.
+          Sorgt dafür, dass jeder Tag, an dem eine Aufgabe einmal lag, weiterhin
+          einen „Weitergeschoben auf …"-Eintrag zeigt — auch wenn die Daten
+          unvollständig waren. <span className="font-black">Sicher: löscht oder ändert keine Aufgaben.</span>
+        </p>
+        <button onClick={runRebuild} disabled={rebuildBusy} className="h-12 w-full rounded-xl font-black tracking-wide disabled:opacity-50"
+          style={{ backgroundColor: "rgba(167,139,250,0.18)", color: "#C4B5FD", border: "1px solid rgba(167,139,250,0.55)" }}>
+          {rebuildBusy ? "Repariere…" : "🔧 REBUILD TASK HISTORY"}
+        </button>
+        {rebuildErr && <div className="mt-2 text-xs p-2 rounded-lg border" style={{ borderColor: "#FF6B6B44", backgroundColor: "#FF6B6B14", color: "#FF6B6B" }}>{rebuildErr}</div>}
+        {rebuildResult && (
+          <div className="mt-3 space-y-2">
+            <div
+              className="text-xs p-2.5 rounded-lg border"
+              style={{ borderColor: "#A78BFA44", backgroundColor: "#A78BFA1A", color: "#C4B5FD" }}
+            >
+              <span className="font-black">{rebuildResult.scanned}</span> Aufgabe(n) geprüft ·{" "}
+              <span className="font-black">{rebuildResult.patched}</span> repariert
+            </div>
+            {rebuildResult.changes.length > 0 && (
+              <details className="rounded-lg border border-white/10 p-2">
+                <summary className="text-xs font-bold opacity-80 cursor-pointer select-none">Details ({rebuildResult.changes.length})</summary>
+                <div className="mt-2 space-y-1.5">
+                  {rebuildResult.changes.map((c, i) => (
+                    <div key={i} className="text-[11px] leading-snug border-l-2 pl-2 py-0.5" style={{ borderColor: "#A78BFA" }}>
+                      <div className="font-bold opacity-90">{c.task_type}</div>
+                      <div className="opacity-60 font-mono text-[10px]">
+                        {c.original_date_added && <>+ original_date={c.original_date_added} </>}
+                        {c.completed_date_added && <>+ completed_date={c.completed_date_added} </>}
+                        {c.rollover_log_synth > 0 && <>+ {c.rollover_log_synth} log-Eintrag</>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

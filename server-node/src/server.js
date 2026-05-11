@@ -249,6 +249,102 @@ const LagerProductModel = mongoose.model('LagerProduct', LagerProductSchema, 'la
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const nowIso = () => new Date().toISOString();
 
+// ---------------------------------------------------------------------
+// Historical Task Rollover — helpers
+// ---------------------------------------------------------------------
+// A task has a LIVE date (where it appears with full controls) and a set
+// of VISITED dates (every day it once landed on). For each visited date
+// that is NOT the live date, we synthesise a STUB ("Weitergeschoben auf …")
+// so past days are NEVER empty when they once held an open task.
+//
+//   • completed_date  → set on Beenden. Once set, live = completed_date.
+//   • next_work_date  → set on Feierabend / Auto-Rollover. Live = this.
+//   • task_date       → original / fallback live date.
+//   • rollover_log[]  → audit trail; each entry = { from, to, … }.
+//   • original_date   → IMMUTABLE planned creation day.
+//
+// We use these to derive virtual stubs WITHOUT writing extra documents
+// (keeps the DB lean and the trail re-buildable from log + dates).
+// ---------------------------------------------------------------------
+function computeLiveDate(t) {
+  if (t.completed_date) return t.completed_date;
+  if (t.continue_tomorrow && t.next_work_date) return t.next_work_date;
+  return t.task_date || t.original_date || null;
+}
+
+function visitedDatesOf(t) {
+  const s = new Set();
+  if (t.original_date) s.add(t.original_date);
+  if (t.task_date) s.add(t.task_date);
+  for (const e of (t.rollover_log || [])) {
+    if (e && e.from) s.add(e.from);
+    if (e && e.to) s.add(e.to);
+  }
+  if (t.next_work_date) s.add(t.next_work_date);
+  if (t.completed_date) s.add(t.completed_date);
+  return [...s].sort();
+}
+
+// For a STUB date, find where the task went next (= the 'to' of the
+// rollover_log entry whose 'from' matches, or the current live date as fallback).
+function nextVisitAfter(t, fromDate) {
+  const entry = (t.rollover_log || []).find((e) => e && e.from === fromDate);
+  if (entry && entry.to) return entry.to;
+  return computeLiveDate(t);
+}
+
+// Produces the list of tasks to show on a given day.
+// Returns:
+//   • LIVE   tasks (full object as stored in Mongo)
+//   • STUBS  (decorated: _stub:true, _weitergeschoben_auf, _current_live_date,
+//             status overridden to 'weitergeschoben')
+//
+// A task appears AS STUB on date D iff:
+//   • D ∈ visitedDates(task) AND
+//   • D !== computeLiveDate(task)
+//
+// A task appears AS LIVE on date D iff:
+//   • D === computeLiveDate(task)
+async function listTasksForDate(date) {
+  // Fetch any task that touched this date in any way. The $or below is wide
+  // enough to catch tasks rolled-over here (via rollover_log) even if the
+  // current task_date / next_work_date no longer point at the date.
+  const tasks = await TaskModel.find({
+    archived: { $ne: true },
+    $or: [
+      { task_date: date },
+      { next_work_date: date },
+      { completed_date: date },
+      { original_date: date },
+      { 'rollover_log.from': date },
+      { 'rollover_log.to': date },
+    ],
+  }, { _id: 0 }).lean();
+
+  const out = [];
+  for (const t of tasks) {
+    const live = computeLiveDate(t);
+    if (live === date) {
+      out.push(t);
+      continue;
+    }
+    // Not the live date — does the task have ANY history at this date?
+    const visited = visitedDatesOf(t);
+    if (!visited.includes(date)) continue;
+    // Build stub copy
+    out.push({
+      ...t,
+      _stub: true,
+      _is_weitergeschoben: true,
+      _weitergeschoben_auf: nextVisitAfter(t, date),
+      _current_live_date: live,
+      // Override status so the UI shows it as historical / not actionable.
+      status: 'weitergeschoben',
+    });
+  }
+  return out;
+}
+
 async function getSettings() {
   let doc = await SettingsModel.findById('singleton').lean();
   if (!doc) {
@@ -403,14 +499,7 @@ router.get('/tasks/today', async (req, res) => {
   const today = todayStr();
   // Catch up: roll any open / overdue tasks forward to today FIRST, then list.
   try { await autoRolloverOpenTasks(today); } catch (e) { console.error('autoRolloverOpenTasks:', e); }
-  // Match: (task_date==today) OR (continuation from yesterday: continue_tomorrow && next_work_date==today)
-  res.json(await TaskModel.find({
-    archived: { $ne: true },
-    $or: [
-      { task_date: today },
-      { continue_tomorrow: true, next_work_date: today },
-    ],
-  }, { _id: 0 }).lean());
+  res.json(await listTasksForDate(today));
 });
 
 // Generic: GET /tasks/by-date?date=YYYY-MM-DD
@@ -422,18 +511,12 @@ router.get('/tasks/by-date', async (req, res) => {
   if (date === todayStr()) {
     try { await autoRolloverOpenTasks(date); } catch (e) { console.error('autoRolloverOpenTasks:', e); }
   }
-  res.json(await TaskModel.find({
-    archived: { $ne: true },
-    $or: [
-      { task_date: date },
-      { continue_tomorrow: true, next_work_date: date },
-    ],
-  }, { _id: 0 }).lean());
+  res.json(await listTasksForDate(date));
 });
 
 // Alias matching the spec the user asked for: GET /api/tasks?date=YYYY-MM-DD
 //   - Without ?date → returns all non-archived tasks (across every date) ordered by date
-//   - With ?date    → matches task_date OR continuation (next_work_date)
+//   - With ?date    → matches task_date OR continuation (next_work_date) OR historical stub
 router.get('/tasks', async (req, res) => {
   const date = String(req.query.date || '').trim();
   if (date) {
@@ -441,13 +524,7 @@ router.get('/tasks', async (req, res) => {
     if (date === todayStr()) {
       try { await autoRolloverOpenTasks(date); } catch (e) { console.error('autoRolloverOpenTasks:', e); }
     }
-    return res.json(await TaskModel.find({
-      archived: { $ne: true },
-      $or: [
-        { task_date: date },
-        { continue_tomorrow: true, next_work_date: date },
-      ],
-    }, { _id: 0 }).lean());
+    return res.json(await listTasksForDate(date));
   }
   res.json(await TaskModel.find({ archived: { $ne: true } }, { _id: 0 }).sort({ task_date: -1 }).lean());
 });
@@ -464,6 +541,103 @@ router.post('/tasks/admin/rollover-open', requireAdmin, async (req, res) => {
     moved: log.filter((x) => x.action === 'rollover').length,
     skipped: log.filter((x) => x.action === 'skip').length,
     log,
+  });
+});
+
+// Alias for the user-friendly button name
+router.post('/tasks/admin/collect-open', requireAdmin, async (req, res) => {
+  const today = todayStr();
+  const log = await autoRolloverOpenTasks(today);
+  res.json({
+    ran_at: new Date().toISOString(),
+    today,
+    moved: log.filter((x) => x.action === 'rollover').length,
+    skipped: log.filter((x) => x.action === 'skip').length,
+    log,
+  });
+});
+
+// ---------------------------------------------------------------------
+// REBUILD TASK HISTORY — admin recovery button.
+// Walks every task and patches the historical trail so:
+//   • original_date is filled (from task_date if missing)
+//   • completed_date is filled for tasks whose workflow is 'finished'
+//     but lack the anchor (legacy / mid-migration data)
+//   • rollover_log is back-filled with a synthetic entry whenever
+//     original_date != current live date AND no log exists yet
+//     (so stub days show up correctly in the day-view).
+// Safe to run any number of times — idempotent on already-clean data.
+// ---------------------------------------------------------------------
+router.post('/tasks/admin/rebuild-history', requireAdmin, async (req, res) => {
+  const startedAt = new Date().toISOString();
+  const allTasks = await TaskModel.find({}, { _id: 0 }).lean();
+  const wfDocs = await WorkflowModel.find({}, { task_id: 1, status: 1, finished_at: 1 }).lean();
+  const wfMap = new Map(wfDocs.map((w) => [w.task_id, w]));
+
+  const changes = [];
+
+  for (const t of allTasks) {
+    const update = {};
+    const synthLog = [];
+    let patched = false;
+
+    // 1) Fill original_date if missing
+    if (!t.original_date) {
+      const orig = t.task_date || (typeof t.created_at === 'string' ? t.created_at.slice(0, 10) : null);
+      if (orig) { update.original_date = orig; patched = true; }
+    }
+
+    // 2) Fill completed_date for finished tasks lacking the anchor
+    const wf = wfMap.get(t.id);
+    if (wf?.status === 'finished' && !t.completed_date) {
+      const cd = (typeof wf.finished_at === 'string' && wf.finished_at.length >= 10)
+        ? wf.finished_at.slice(0, 10)
+        : (t.task_date || todayStr());
+      update.completed_date = cd; patched = true;
+    }
+
+    // 3) If the task has clearly moved (original_date !== current live date)
+    //    but rollover_log is empty, synthesise a single archival entry so the
+    //    visit list is correct for stub rendering.
+    const liveDate = (update.completed_date || t.completed_date)
+      ? (update.completed_date || t.completed_date)
+      : (t.continue_tomorrow && t.next_work_date)
+        ? t.next_work_date
+        : t.task_date;
+    const origDate = update.original_date || t.original_date;
+    const log = Array.isArray(t.rollover_log) ? t.rollover_log : [];
+    if (origDate && liveDate && origDate !== liveDate && log.length === 0) {
+      synthLog.push({
+        from: origDate,
+        to: liveDate,
+        reason: 'Rebuild: historische Spur ergänzt',
+        ts: new Date().toISOString(),
+        status: wf?.status || 'unknown',
+      });
+      patched = true;
+    }
+
+    if (patched) {
+      const mongoUpdate = {};
+      if (Object.keys(update).length) mongoUpdate.$set = update;
+      if (synthLog.length) mongoUpdate.$push = { rollover_log: { $each: synthLog, $slice: -50 } };
+      await TaskModel.updateOne({ id: t.id }, mongoUpdate);
+      changes.push({
+        id: t.id,
+        task_type: t.task_type,
+        original_date_added: update.original_date || null,
+        completed_date_added: update.completed_date || null,
+        rollover_log_synth: synthLog.length,
+      });
+    }
+  }
+
+  broadcast({ type: 'tasks_updated' });
+  res.json({
+    ran_at: startedAt,
+    scanned: allTasks.length,
+    patched: changes.length,
+    changes,
   });
 });
 

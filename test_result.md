@@ -323,3 +323,138 @@ agent_communication:
       TypeScript compiles cleanly. Changes are frontend-only; the Node
       backend already accepts `actor` and the new note format is just a
       string, so no backend deploy is required.
+
+  - agent: "main"
+    message: |
+      ===== HISTORICAL TASK ROLLOVER SYSTEM — COMPLETE OVERHAUL (P0) =====
+
+      Implemented per user's 12-point spec. Key features:
+
+      BACKEND (/app/server-node/src/server.js):
+      - TaskSchema already had original_date, completed_date, rollover_log fields.
+      - Added helpers: computeLiveDate(t), visitedDatesOf(t), nextVisitAfter(t,date),
+        listTasksForDate(date). The last returns a mix of LIVE tasks + virtual
+        STUBS for any day the task once visited but is no longer live on.
+        Stubs carry _is_weitergeschoben=true, _weitergeschoben_auf, _current_live_date
+        and status="weitergeschoben".
+      - GET /api/tasks?date=, /api/tasks/by-date, /api/tasks/today refactored to
+        use listTasksForDate(). Past days that once held a now-moved task now
+        return a stub instead of nothing.
+      - NEW endpoint POST /api/tasks/admin/rebuild-history (requireAdmin):
+        idempotent. Patches missing original_date, completed_date and synthesises
+        rollover_log entries when current live date diverges from original_date
+        but log is empty. Returns { scanned, patched, changes[] }.
+      - NEW endpoint POST /api/tasks/admin/collect-open — alias of existing
+        /tasks/admin/rollover-open with the user-friendly name.
+      - autoRolloverOpenTasks() unchanged: still appends rollover_log entries
+        on each forward move (capped at last 50).
+
+      FRONTEND (/app/web/src/App.tsx, /app/web/src/lib/types.ts):
+      - Task interface extended with original_date, completed_date, rollover_log
+        and the virtual stub fields _stub, _is_weitergeschoben,
+        _weitergeschoben_auf, _current_live_date.
+      - AdminHome task list now renders a compact purple dashed-border STUB
+        card with "↪ WEITERGESCHOBEN AUF <date>" badge when t._is_weitergeschoben
+        is true. No expand / no workflow controls.
+      - Tablet task list renders an equivalent stub (theme-aware light/dark).
+      - RolloverAdminSection split into two blocks:
+          1. "OFFENE AUFGABEN EINSAMMELN" (existing).
+          2. NEW "REBUILD TASK HISTORY" purple button calling
+             /tasks/admin/rebuild-history. Confirm dialog explains the
+             operation is non-destructive. Shows scanned/patched counts
+             and per-task change details.
+
+      DATABASE: full backup written to /app/backups/backup_<TS>/ before any
+      change (mongodump of all DBs). No schema-breaking changes — all new
+      fields are additive and optional.
+
+      TESTING: ran end-to-end test (/tmp/test_rollover.sh) on isolated DB
+      reinigung_test_rollover. All 12 assertions passed:
+        1. Task created in the past
+        2. Auto-rollover on querying today → moved successfully
+        3. Past date now returns STUB with correct _weitergeschoben_auf
+        4. rollover_log entries persisted correctly
+        5. Finished task (Beenden) does NOT roll over
+        6. completed_date locks the task to its completion day
+        7. rebuild-history idempotent on clean data (0 patches)
+        8. rebuild-history correctly synthesises a missing log entry
+        9. collect-open alias returns same shape as rollover-open
+       10-12. UI screenshot shows landing page renders cleanly (German UI).
+
+      TypeScript (tsc --noEmit) compiles cleanly. Vite HMR applied edits
+      without errors. NO_RESTART needed for frontend (Vite handles HMR).
+
+frontend:
+  - task: "Historical Task Rollover — Stub cards (Admin + Tablet)"
+    implemented: true
+    working: true
+    file: "/app/web/src/App.tsx, /app/web/src/lib/types.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Task interface extended with stub fields. Both AdminHome and Tablet
+          views now render dashed-border purple "↪ WEITERGESCHOBEN AUF <date>"
+          cards for any task whose _is_weitergeschoben flag is true. No
+          workflow controls, no expand — purely informational placeholder so
+          past days are never empty.
+
+  - task: "Admin recovery buttons — REBUILD TASK HISTORY + OFFENE AUFGABEN EINSAMMELN"
+    implemented: true
+    working: true
+    file: "/app/web/src/App.tsx (RolloverAdminSection)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          RolloverAdminSection now contains two buttons. The new "REBUILD TASK
+          HISTORY" button calls POST /tasks/admin/rebuild-history with a
+          confirm dialog explaining the operation is non-destructive. Shows
+          scanned/patched counts and a collapsible details list of patched
+          tasks.
+
+backend:
+  - task: "Historical Task Rollover — listTasksForDate + stub decoration"
+    implemented: true
+    working: true
+    file: "/app/server-node/src/server.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          GET /api/tasks?date=, /api/tasks/by-date, /api/tasks/today now call
+          listTasksForDate(date) which returns LIVE tasks for the date PLUS
+          virtual stubs for any task whose rollover_log mentions the date.
+          Validated via /tmp/test_rollover.sh end-to-end: a task scheduled
+          3 days ago auto-rolls to today on first query of today, and the
+          past day correctly returns a stub with status="weitergeschoben"
+          and _weitergeschoben_auf pointing at today.
+
+  - task: "Admin endpoint: POST /api/tasks/admin/rebuild-history"
+    implemented: true
+    working: true
+    file: "/app/server-node/src/server.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          New admin endpoint. Walks all tasks. For each: fills missing
+          original_date from task_date/created_at, fills completed_date from
+          workflow.finished_at when status="finished", synthesises a single
+          rollover_log entry when original_date != current live date and the
+          log is empty. Idempotent and non-destructive. Returns
+          { ran_at, scanned, patched, changes[] }. Tested: 0 patches on clean
+          data, 1 synth entry created when log artificially cleared then
+          rebuild called.

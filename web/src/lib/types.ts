@@ -26,7 +26,7 @@ export interface Task {
   person_ids: string[];
   time_from: string;
   time_to: string;
-  status: TaskStatus;
+  status: TaskStatus | "weitergeschoben";
   accept_reason?: string | null;
   not_finished_reason?: string | null;
   not_done_reason?: string | null;
@@ -36,9 +36,24 @@ export interface Task {
   archived: boolean;
   archive_date?: string | null;
   task_date: string;
+  // Immutable creation/planned day. Set ONCE on POST /tasks. Used to compute
+  // the historical visit list — never changes after creation.
+  original_date?: string | null;
+  // Set when workflow → 'finished'. After this, auto-rollover skips the task.
+  completed_date?: string | null;
   continue_tomorrow?: boolean;
   next_work_date?: string | null;
+  // Audit trail of every rollover the server applied to this task.
+  rollover_log?: Array<{ from: string; to: string; reason?: string; ts?: string; status?: string }>;
   photos?: TaskPhoto[];
+  // ====== Virtual stub fields (server-decorated only) ======
+  // When a task once lived on date X but has been rolled forward, querying
+  // X returns the task with these flags set so the UI can render a
+  // historical placeholder ("Weitergeschoben auf …") instead of full controls.
+  _stub?: boolean;
+  _is_weitergeschoben?: boolean;
+  _weitergeschoben_auf?: string | null;
+  _current_live_date?: string | null;
 }
 
 export interface AppSettings {
