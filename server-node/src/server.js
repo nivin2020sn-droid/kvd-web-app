@@ -108,6 +108,13 @@ const TaskSchema = new mongoose.Schema({
   archived: { type: Boolean, default: false },
   archive_date: { type: String, default: null },
   task_date: { type: String, default: () => new Date().toISOString().slice(0, 10) },
+  // Immutable creation date — set ONCE on POST /tasks. Used by the
+  // historical view ("show me this task as it looked on day X"). NEVER
+  // changes; only task_date / next_work_date / rollover_log advance.
+  original_date: { type: String, default: null },
+  // Set when the workflow status flips to 'finished'. After this the
+  // auto-rollover MUST skip the task forever.
+  completed_date: { type: String, default: null },
   // Feierabend continuation — set by `feierabend` event. `task_date` NEVER
   // changes on Feierabend (the original planned day stays intact); instead we
   // note that this task should ALSO appear on `next_work_date`, labelled
@@ -563,6 +570,7 @@ router.post('/tasks', requireAdmin, async (req, res) => {
     time_from: b.time_from,
     time_to: b.time_to,
     task_date: taskDate,
+    original_date: taskDate,   // immutable creation day — never changes
   });
   broadcast({ type: 'tasks_updated' });
   const obj = task.toObject();
@@ -1660,11 +1668,21 @@ router.post('/workflows/:task_id/event', async (req, res) => {
     );
     broadcast({ type: 'tasks_updated' });
   }
+  // On Beenden: pin the completion date so the auto-rollover NEVER touches
+  // this task again. The task stays anchored to whatever day it was on when
+  // finished. Also clear continue_tomorrow so it doesn't keep continuing.
+  if (type === 'beenden' && taskDoc) {
+    const today = todayStr();
+    await TaskModel.updateOne(
+      { id: req.params.task_id },
+      { $set: { completed_date: today, continue_tomorrow: false, next_work_date: null } },
+    );
+    console.log(`✅ [beenden] task=${taskDoc.id} type="${taskDoc.task_type}"  completed_date=${today}`);
+    broadcast({ type: 'tasks_updated' });
+  }
   broadcast({ type: 'workflow_updated', workflow: updated });
   res.json(updated);
 });
-
-// DELETE workflow (when admin deletes a task we can clean it up)
 router.delete('/workflows/:task_id', requireAdmin, async (req, res) => {
   await WorkflowModel.deleteOne({ task_id: req.params.task_id });
   broadcast({ type: 'workflow_updated', workflow: { task_id: req.params.task_id, deleted: true } });
@@ -1864,11 +1882,12 @@ function pushRolloverLog(entry) {
 
 async function autoRolloverOpenTasks(today) {
   const log = [];
-  // Candidates: non-archived tasks whose "target day" is in the past.
-  //   • Feierabend-deferred: continue_tomorrow=true AND next_work_date<today
-  //   • Plain overdue:       continue_tomorrow!=true AND task_date<today
+  // Candidates: non-archived, non-completed tasks whose "target day" is in
+  // the past. `completed_date` being set means the task was Beendet — those
+  // are anchored and must NEVER move.
   const candidates = await TaskModel.find({
     archived: { $ne: true },
+    completed_date: { $in: [null, undefined] },
     $or: [
       { continue_tomorrow: true, next_work_date: { $lt: today, $ne: null } },
       { continue_tomorrow: { $ne: true }, task_date: { $lt: today } },
