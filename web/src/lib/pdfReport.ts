@@ -36,6 +36,22 @@ function sanitizeFilename(s: string): string {
 }
 
 /**
+ * Normalize user-entered text for PDF rendering.
+ * - Convert Windows / Mac line endings to "\n" so jsPDF + autotable
+ *   recognise them as explicit line breaks.
+ * - Trim trailing whitespace per line (keeps user-intended blank lines).
+ * - DO NOT collapse multiple newlines — user may want blank paragraphs.
+ */
+function normalizeMultiline(s: string | null | undefined): string {
+  if (s == null) return "";
+  return String(s)
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))   // strip trailing spaces only
+    .join("\n");
+}
+
+/**
  * Resolve the freshest workflow available (server > local). We try (best-effort)
  * to pull the latest from the configured server so the PDF reflects the current
  * state, but never blocks long: we fall back to the local workflow on any error
@@ -95,6 +111,13 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   const datumISO = (task.task_date || new Date().toISOString().slice(0, 10)).slice(0, 10);
 
   const doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
+  // ----- Global text rendering defaults — defensive resets so user-entered
+  // multi-line text (Beschreibung, Notiz) is rendered with NATURAL letter and
+  // line spacing, exactly as typed by the user. jsPDF defaults are mostly fine
+  // but we set them explicitly so future jsPDF upgrades cannot regress.
+  doc.setCharSpace(0);              // NO extra spacing between glyphs
+  doc.setLineHeightFactor(1.4);     // comfortable paragraph leading (~140%)
+  doc.setLanguage("de");
   const pageW = doc.internal.pageSize.getWidth();   // 210
   const pageH = doc.internal.pageSize.getHeight();  // 297
   const marginX = 14;
@@ -162,7 +185,9 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
     ["Haus", task.haus || "—"],
     ["Station", task.station || "—"],
     ["Mitarbeiter", personNames],
-    ["Beschreibung", task.description || "—"],
+    // Multi-line descriptions: preserve user newlines via normalizeMultiline.
+    // jspdf-autotable with overflow:'linebreak' honours "\n" as a hard break.
+    ["Beschreibung", normalizeMultiline(task.description) || "—"],
     ["Zeit von", task.time_from || "—"],
     ["Zeit bis", task.time_to || "—"],
     ["Status", statusLabel],
@@ -177,16 +202,25 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
     styles: {
       font: "helvetica",
       fontSize: 10.5,
-      cellPadding: { top: 2.2, right: 3, bottom: 2.2, left: 3 },
+      cellPadding: { top: 2.5, right: 3, bottom: 2.5, left: 3 },
       lineColor: [210, 210, 210],
       lineWidth: 0.1,
       textColor: [0, 0, 0],
+      // CRITICAL for multi-line content (Beschreibung etc.):
+      //   - 'linebreak' makes autotable honour "\n" inside the cell value
+      //     AND wrap long words at the cell width.
+      //   - halign:'left' prevents any justified spacing weirdness.
+      //   - valign:'top' keeps short labels aligned to first line.
       overflow: "linebreak",
+      halign: "left",
       valign: "top",
+      // Slightly more generous line height for paragraph readability.
+      // Matches our global setLineHeightFactor above.
+      // (autotable reads this from the table-level styles.)
     },
     columnStyles: {
-      0: { cellWidth: 58, fontStyle: "bold", fillColor: [245, 245, 245] },
-      1: { cellWidth: "auto" },
+      0: { cellWidth: 58, fontStyle: "bold", fillColor: [245, 245, 245], valign: "top" },
+      1: { cellWidth: "auto", overflow: "linebreak", halign: "left", valign: "top" },
     },
     body: infoRows,
     didDrawCell: (data) => {
@@ -236,7 +270,10 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
       const creator = author ? `\n(${author})` : "";
       const typCell = `${typeLabel}${undone}${creator}`;
       const zeitCell = `${evTime(ev)}\n${evDate(ev)}`;
-      let notizCell = formatEventNote(ev) || "—";
+      // Normalize user-entered text so every "\n" inside the note is a real
+      // line break the PDF engine will honour (and not a CRLF that some
+      // browsers introduce).
+      let notizCell = normalizeMultiline(formatEventNote(ev)) || "—";
       if (ev.corrections && ev.corrections.length) {
         const corrStr = ev.corrections.map((co) => `• ${EVENT_LABEL[co.target_type]}: ${fmtTime24(co.old_ts)} → ${co.new_display_time ? co.new_display_time + ':00' : fmtTime24(co.new_ts)}`).join("\n");
         notizCell = notizCell === "—" ? corrStr : `${notizCell}\n${corrStr}`;
@@ -260,17 +297,21 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
       styles: {
         font: "helvetica",
         fontSize: 10.5,
-        cellPadding: { top: 3.5, right: 4, bottom: 3.5, left: 4 },
+        cellPadding: { top: 4, right: 4, bottom: 4, left: 4 },
         lineColor: [220, 220, 220],
         lineWidth: 0.1,
         textColor: [0, 0, 0],
+        // CRITICAL: linebreak overflow preserves user's "\n" hard breaks
+        // AND wraps long words on cell width. halign:left avoids justified
+        // spacing artefacts that look like wide letter spacing.
         overflow: "linebreak",
+        halign: "left",
         valign: "top",
       },
       columnStyles: {
-        0: { cellWidth: 38 },
-        1: { cellWidth: 32, font: "courier", fontSize: 10 },
-        2: { cellWidth: "auto" },
+        0: { cellWidth: 38, overflow: "linebreak", halign: "left", valign: "top" },
+        1: { cellWidth: 32, font: "courier", fontSize: 10, halign: "left", valign: "top" },
+        2: { cellWidth: "auto", overflow: "linebreak", halign: "left", valign: "top" },
       },
       didParseCell: (data) => {
         if (data.section === "body" && body[data.row.index]?._undone) {

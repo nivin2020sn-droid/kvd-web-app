@@ -419,6 +419,57 @@ frontend:
           scanned/patched counts and a collapsible details list of patched
           tasks.
 
+  - task: "PDF & Print report — preserve user line breaks, fix letter spacing"
+    implemented: true
+    working: true
+    file: "/app/web/src/lib/pdfReport.ts, /app/web/src/lib/printReport.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          User reported that PDF/print reports had:
+            1) Unusually wide letter spacing in body text
+            2) "\n" line breaks NOT preserved in Beschreibung / Notiz / timeline
+            3) No word wrap on long paragraphs
+            4) Bad text alignment (felt justified)
+
+          Root cause:
+            - HTML print report used esc() to escape text but HTML treats "\n"
+              as whitespace — so multi-line notes collapsed to one paragraph.
+            - PDF didn't normalize CRLF / explicitly disable charSpace.
+
+          Fixes applied:
+            • printReport.ts:
+                - body { letter-spacing: normal; word-spacing: normal; line-height: 1.55; }
+                - table.info td & .col-notiz now use `white-space: pre-wrap`
+                  (preserves every "\n" the user typed, still wraps long lines).
+                - Explicit `text-align: left` on cells (no justified spacing).
+                - esc() now normalises "\r\n" / "\r" → "\n" before escaping.
+
+            • pdfReport.ts:
+                - Added `normalizeMultiline()` helper for description / notiz.
+                - At document start: `doc.setCharSpace(0)` + `doc.setLineHeightFactor(1.4)`.
+                - autoTable styles: `overflow: 'linebreak'` (already set) +
+                  explicit `halign: 'left'` + `valign: 'top'` on every column.
+                - Slightly increased cell padding for paragraph readability.
+
+          Verification (headless jsPDF render of the user's example):
+            Input:
+              Mögliche Ursachen:
+              Wassereintritt in den Motor während des Reinigungsvorgangs.
+              Fehlende Schutzabdeckung.
+              Defekt am Tank.
+            PDF output — each line emitted as its OWN Tj (text-show) op:
+              1. "Mögliche Ursachen:"
+              2. "Wassereintritt in den Motor während des Reinigungsvorgangs."
+              3. "Fehlende Schutzabdeckung."
+              4. "Defekt am Tank."
+            ✓ HTML preview screenshot also confirmed each line on its own row,
+              natural left alignment, no letter-spacing artefacts.
+
 backend:
   - task: "Historical Task Rollover — listTasksForDate + stub decoration"
     implemented: true

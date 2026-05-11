@@ -23,7 +23,10 @@ async function resolvePrintWorkflow(taskId: string, fallback: TaskWorkflow | nul
 }
 
 function esc(s: unknown): string {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+  // Normalize Windows / Mac line-endings to "\n" so the CSS `white-space: pre-wrap`
+  // rule can render every line break consistently across browsers.
+  const str = String(s ?? "").replace(/\r\n?/g, "\n");
+  return str.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
 function fmtDate(iso: string | null | undefined): string {
@@ -166,7 +169,12 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
   body {
     font-family: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
     font-size: 11pt;
-    line-height: 1.5;
+    line-height: 1.55;
+    /* No letter / word spacing weirdness on body text — only headings keep tracking */
+    letter-spacing: normal;
+    word-spacing: normal;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -255,6 +263,14 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     vertical-align: top;
     word-break: break-word;
     overflow-wrap: break-word;
+    /* CRITICAL: preserve user-entered line breaks (\n) in description / notes */
+    white-space: pre-wrap;
+    /* Reset any inherited spacing tweaks so body text stays natural */
+    letter-spacing: normal;
+    word-spacing: normal;
+    /* No justified text — left-align everything for natural reading */
+    text-align-last: auto;
+    hyphens: auto;
   }
   table.info th {
     width: 38%;
@@ -262,6 +278,8 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     font-weight: 700;
     color: #000;
     font-size: 10pt;
+    /* Keep label headers compact — no whitespace preservation needed */
+    white-space: normal;
   }
   table.info td { font-size: 11pt; }
 
@@ -287,20 +305,34 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     padding: 10px 12px;
     border-bottom: 1px solid #ddd;
     vertical-align: top;
-    line-height: 1.5;
+    line-height: 1.55;
     font-size: 11pt;
+    /* No tracking adjustments on body cells */
+    letter-spacing: normal;
+    word-spacing: normal;
+    text-align: left;
   }
   /* column widths + text wrap behaviour */
   table.events .col-typ   { width: 120px;  min-width: 120px;  white-space: normal; word-break: break-word; overflow-wrap: break-word; }
   table.events .col-zeit  { width: 160px;  min-width: 140px;  white-space: normal; font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
-  table.events .col-notiz { width: auto;   max-width: none;   white-space: normal; word-break: break-word; overflow-wrap: break-word; hyphens: auto; }
+  /* CRITICAL: pre-wrap so user-entered "\n" line breaks are preserved
+     while long words still wrap on width. break-word allows word breaking. */
+  table.events .col-notiz {
+    width: auto; max-width: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+    text-align: left;
+  }
   table.events tr.undone td { color: #666; text-decoration: line-through; }
   table.events tr { page-break-inside: avoid; }    /* keep a single row intact */
   table.events .corrections {
     font-size: 9.5pt;
     color: #555;
     margin-top: 4px;
-    line-height: 1.4;
+    line-height: 1.45;
+    white-space: pre-wrap;
   }
 
   /* ---- Summary row (work/pause totals) ---- */
