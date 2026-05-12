@@ -13,6 +13,7 @@ export type EventType =
   | "fortsetzen"
   | "beenden"
   | "feierabend"
+  | "mitarbeiter_hinzu"
   | "admin_zeitkorrektur"
   | "admin_beenden_rueckgaengig"
   | "timeline";
@@ -221,6 +222,10 @@ export async function recordEvent(
           actor: me.name || undefined,
           author_id: me.id || undefined,
           author_name: me.name || undefined,
+          // Forward the snapshot ONLY for events where the new roster MUST
+          // override the task's current person_ids (currently: mitarbeiter_hinzu).
+          // For other events the backend uses taskDoc.person_ids implicitly.
+          persons: type === "mitarbeiter_hinzu" ? personsSnapshot : undefined,
         },
       });
       // Defensive merge: if backend hasn't been redeployed yet, the latest
@@ -319,39 +324,157 @@ export interface PersonHoursDay {
 }
 
 /**
- * Compute Personenstunden CORRECTLY for multi-day tasks.
+ * A SUB-PERIOD where the active Mitarbeiter count was CONSTANT.
+ *
+ *   • A simple day with no person changes  → 1 period.
+ *   • A day with one Mitarbeiter added at 09:00 → 2 periods
+ *     (07:00–09:00 ×2, 09:00–15:00 ×3).
+ *
+ * Sub-periods are bounded by:
+ *   • The work segment limits (start of starten, end of pause/feierabend/beenden).
+ *   • Every `mitarbeiter_hinzu` event whose ts falls INSIDE that segment.
+ */
+export interface PersonHoursPeriod {
+  date: string;          // YYYY-MM-DD (of period's start)
+  startTs: string;       // ISO ts
+  endTs: string;         // ISO ts
+  startHHMM: string;     // "HH:MM" local
+  endHHMM: string;       // "HH:MM" local
+  durationMs: number;
+  personCount: number;
+  personHoursMs: number;
+}
+
+// Internal helper — extract the active Mitarbeiter count at a given timestamp
+// from the chronological persons-snapshot timeline.
+function _personCountAt(snapshots: Array<{ ts: number; count: number }>, atMs: number, fallback: number): number {
+  let active = fallback;
+  for (const snap of snapshots) {
+    if (snap.ts <= atMs) active = snap.count;
+    else break;
+  }
+  return active;
+}
+
+/**
+ * Compute Personenstunden — splitting each work segment at every
+ * `mitarbeiter_hinzu` event so a newly added Mitarbeiter is ONLY counted
+ * from his join moment forward.
+ *
+ *   Personenstunden = Σ_sub-period (duration × max(1, personCount))
+ *
+ * Returns ALL sub-periods AND the grand total. Use the period list to
+ * render an audit breakdown in the UI / PDF / Print report.
+ */
+export function personHoursMsByPeriod(
+  wf: TaskWorkflow,
+  fallbackPersonCount: number,
+  nowMs?: number,
+): { totalMs: number; periods: PersonHoursPeriod[] } {
+  if (!wf) return { totalMs: 0, periods: [] };
+  const now = nowMs ?? Date.now();
+  const fallback = Math.max(0, fallbackPersonCount | 0);
+
+  // 1. Build a chronological list of (ts, count) snapshot breakpoints from
+  //    every event that carries a `persons` snapshot. Used to look up the
+  //    "active person count" at any moment.
+  const snapshots = (wf.events || [])
+    .filter((e) => !e.undone && Array.isArray(e.persons))
+    .map((e) => ({ ts: new Date(e.ts).getTime(), count: (e.persons || []).length }))
+    .sort((a, b) => a.ts - b.ts);
+
+  // 2. For each work segment, split it at any breakpoint INSIDE it.
+  const segs = wf.segments || [];
+  const periods: PersonHoursPeriod[] = [];
+  for (const seg of segs) {
+    const segStart = new Date(seg.start).getTime();
+    const segEnd = seg.end ? new Date(seg.end).getTime() : now;
+    if (segEnd <= segStart) continue;
+
+    // Boundary ts list inside (segStart, segEnd), all unique and sorted.
+    const boundaries = Array.from(new Set(
+      snapshots
+        .filter((s) => s.ts > segStart && s.ts < segEnd)
+        .map((s) => s.ts),
+    )).sort((a, b) => a - b);
+
+    let cursor = segStart;
+    let cursorCount = _personCountAt(snapshots, segStart, fallback);
+    for (const bts of boundaries) {
+      if (bts > cursor) {
+        periods.push({
+          ..._toPeriod(cursor, bts, cursorCount),
+        });
+      }
+      cursor = bts;
+      cursorCount = _personCountAt(snapshots, bts, fallback);
+    }
+    if (segEnd > cursor) {
+      periods.push({
+        ..._toPeriod(cursor, segEnd, cursorCount),
+      });
+    }
+  }
+  const totalMs = periods.reduce((acc, p) => acc + p.personHoursMs, 0);
+  return { totalMs, periods };
+}
+
+function _toPeriod(startMs: number, endMs: number, count: number): PersonHoursPeriod {
+  const durationMs = endMs - startMs;
+  const startDate = new Date(startMs);
+  const endDate = new Date(endMs);
+  const date = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, "0")}-${String(startDate.getDate()).padStart(2, "0")}`;
+  const startHHMM = `${String(startDate.getHours()).padStart(2, "0")}:${String(startDate.getMinutes()).padStart(2, "0")}`;
+  const endHHMM = `${String(endDate.getHours()).padStart(2, "0")}:${String(endDate.getMinutes()).padStart(2, "0")}`;
+  return {
+    date,
+    startTs: startDate.toISOString(),
+    endTs: endDate.toISOString(),
+    startHHMM,
+    endHHMM,
+    durationMs,
+    personCount: count,
+    personHoursMs: durationMs * Math.max(1, count),
+  };
+}
+
+/**
+ * Compute Personenstunden CORRECTLY for multi-day tasks (BACKWARDS COMPAT).
  *
  *   Personenstunden = Σ (workMs_day × max(1, personCount_day))
  *
- * Where personCount_day comes from the PER-DAY event `persons` snapshot
- * (captured at the moment the user clicked Starten / Pause / etc on that day).
- * This means a task that ran:
- *    Tag 1: 8h × 2 Mitarbeiter = 16h
- *    Tag 2: 6h × 3 Mitarbeiter = 18h
- *    Tag 3: 4h × 1 Mitarbeiter =  4h
- *  → Gesamt-Personenstunden = 38h    (NOT 18h × current_count)
+ * Aggregates the per-period result by day. Days with mixed person counts
+ * collapse into the SUM of their periods (so the day-total is accurate).
  *
- * Fallback: if a day has no event-level persons snapshot (legacy data),
- * use `fallbackPersonCount` (= the task's current person_ids length).
- *
- * Returns BOTH the per-day breakdown AND the grand total.
+ * Use `personHoursMsByPeriod` if you need the full breakdown (preferred
+ * for UI / reports).
  */
 export function personHoursMsByDay(
   wf: TaskWorkflow,
   fallbackPersonCount: number,
   nowMs?: number,
 ): { totalMs: number; days: PersonHoursDay[] } {
-  if (!wf) return { totalMs: 0, days: [] };
-  const breakdown = buildDailyBreakdown(wf, nowMs);
-  // Drop days that contributed no work (e.g. timeline-only events on a day).
-  const workingDays = breakdown.filter((d) => d.workMs > 0);
-  const fallback = Math.max(0, fallbackPersonCount | 0);
-  const days: PersonHoursDay[] = workingDays.map((d) => {
-    const count = (d.persons && d.persons.length) ? d.persons.length : fallback;
-    const mult = Math.max(1, count);
-    return { date: d.date, workMs: d.workMs, personCount: count, personHoursMs: d.workMs * mult };
-  });
-  const totalMs = days.reduce((acc, x) => acc + x.personHoursMs, 0);
+  const { totalMs, periods } = personHoursMsByPeriod(wf, fallbackPersonCount, nowMs);
+  // Group periods by date.
+  const byDate = new Map<string, { workMs: number; personHoursMs: number; counts: Set<number> }>();
+  for (const p of periods) {
+    let entry = byDate.get(p.date);
+    if (!entry) { entry = { workMs: 0, personHoursMs: 0, counts: new Set() }; byDate.set(p.date, entry); }
+    entry.workMs += p.durationMs;
+    entry.personHoursMs += p.personHoursMs;
+    entry.counts.add(p.personCount);
+  }
+  const days: PersonHoursDay[] = [...byDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, agg]) => {
+      // "Representative" personCount for the day:
+      //   - if all periods had the same count → that count
+      //   - otherwise → the MAX (informational only; the workMs / personHoursMs
+      //     remain mathematically correct via SUM of period contributions).
+      const counts = [...agg.counts];
+      const repCount = counts.length === 1 ? counts[0] : Math.max(...counts);
+      return { date, workMs: agg.workMs, personCount: repCount, personHoursMs: agg.personHoursMs };
+    });
   return { totalMs, days };
 }
 
@@ -700,6 +823,7 @@ export const EVENT_LABEL: Record<EventType, string> = {
   fortsetzen: "Fortsetzen",
   beenden: "Beenden",
   feierabend: "Feierabend",
+  mitarbeiter_hinzu: "Mitarbeiter hinzugefügt",
   admin_zeitkorrektur: "Admin · Zeitkorrektur",
   admin_beenden_rueckgaengig: "Admin · Beenden rückgängig",
   timeline: "Timeline",
@@ -741,6 +865,7 @@ export const EVENT_COLOR: Record<EventType, string> = {
   fortsetzen: "#3B82F6",  // blau
   beenden: "#00E676",     // grün
   feierabend: "#6366F1",  // indigo (Ende des Tages · wird fortgesetzt)
+  mitarbeiter_hinzu: "#A78BFA", // violet (Personal-Änderung)
   admin_zeitkorrektur: "#FFD600",
   admin_beenden_rueckgaengig: "#FFD600",
   timeline: "#C084FC",

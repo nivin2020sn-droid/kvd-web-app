@@ -6,7 +6,7 @@
 
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMsByDay, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMsByPeriod, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
 async function resolvePrintWorkflow(taskId: string, fallback: TaskWorkflow | null): Promise<TaskWorkflow | null> {
@@ -89,7 +89,7 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
   // 👥 Personenstunden: Σ (Arbeitszeit pro Tag × Mitarbeiter dieses Tages).
   // Korrekt für Mehrtages-Aufgaben mit wechselndem Personal.
   const personCount = Array.isArray(task.person_ids) ? task.person_ids.length : 0;
-  const personHoursReport = wf ? personHoursMsByDay(wf, personCount) : { totalMs: 0, days: [] };
+  const personHoursReport = wf ? personHoursMsByPeriod(wf, personCount) : { totalMs: 0, periods: [] };
   const personHours = personHoursReport.totalMs;
   const events = buildEventRows(wf);
   const days = wf ? buildDailyBreakdown(wf) : [];
@@ -543,33 +543,33 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
       ${infoRow(
         "👥 Personenstunden",
         `<strong style="color:#7C3AED;">${esc(formatDuration(personHours))}</strong>` +
-        (personHoursReport.days.length > 1
-          ? ` <span class="muted small" style="font-size:9pt;">(${personHoursReport.days.length} Arbeitstage)</span>`
-          : (personHoursReport.days.length === 1 && personHoursReport.days[0].personCount > 1)
-            ? ` <span class="muted small" style="font-size:9pt;">(${esc(formatDuration(personHoursReport.days[0].workMs))} × ${personHoursReport.days[0].personCount} Personen)</span>`
+        (personHoursReport.periods.length > 1
+          ? ` <span class="muted small" style="font-size:9pt;">(${personHoursReport.periods.length} Perioden)</span>`
+          : (personHoursReport.periods.length === 1 && personHoursReport.periods[0].personCount > 1)
+            ? ` <span class="muted small" style="font-size:9pt;">(${esc(formatDuration(personHoursReport.periods[0].durationMs))} × ${personHoursReport.periods[0].personCount} Personen)</span>`
             : ''),
       )}
     </tbody>
   </table>
 
-  ${(personHoursReport.days.length >= 2 || personHoursReport.days.some((d) => d.personCount !== personCount)) ? `
+  ${(personHoursReport.periods.length >= 2 || personHoursReport.periods.some((p) => p.personCount !== personCount)) ? `
   <h2>👥 Personenstunden — Tag-für-Tag</h2>
   <table class="ph-breakdown" style="width:100%;border-collapse:collapse;margin-top:6px;">
     <thead>
       <tr style="background:#7C3AED;color:#fff;">
-        <th style="padding:6px 8px;text-align:left;font-size:9pt;letter-spacing:0.5px;text-transform:uppercase;">Tag</th>
+        <th style="padding:6px 8px;text-align:left;font-size:9pt;letter-spacing:0.5px;text-transform:uppercase;">Tag · Periode</th>
         <th style="padding:6px 8px;text-align:left;font-size:9pt;letter-spacing:0.5px;text-transform:uppercase;">Arbeitszeit</th>
         <th style="padding:6px 8px;text-align:center;font-size:9pt;letter-spacing:0.5px;text-transform:uppercase;">Mitarbeiter</th>
         <th style="padding:6px 8px;text-align:right;font-size:9pt;letter-spacing:0.5px;text-transform:uppercase;">Personenstunden</th>
       </tr>
     </thead>
     <tbody>
-      ${personHoursReport.days.map((d) => `
+      ${personHoursReport.periods.map((p) => `
         <tr>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:10pt;">${esc(d.date)}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee;font-family:'Courier New',monospace;font-size:10pt;font-variant-numeric:tabular-nums;">${esc(formatDuration(d.workMs))}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center;font-size:10pt;">× ${Math.max(1, d.personCount)}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;font-family:'Courier New',monospace;font-weight:700;color:#7C3AED;font-size:10pt;font-variant-numeric:tabular-nums;">${esc(formatDuration(d.personHoursMs))}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:10pt;">${esc(p.date)} <span style="color:#6B7280;font-size:9pt;">${esc(p.startHHMM)}–${esc(p.endHHMM)}</span></td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;font-family:'Courier New',monospace;font-size:10pt;font-variant-numeric:tabular-nums;">${esc(formatDuration(p.durationMs))}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center;font-size:10pt;">× ${Math.max(1, p.personCount)}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;font-family:'Courier New',monospace;font-weight:700;color:#7C3AED;font-size:10pt;font-variant-numeric:tabular-nums;">${esc(formatDuration(p.personHoursMs))}</td>
         </tr>`).join("")}
       <tr style="background:#F3F0FF;">
         <td colspan="3" style="padding:8px;text-align:right;font-weight:800;color:#7C3AED;letter-spacing:0.5px;font-size:10pt;text-transform:uppercase;">Gesamt</td>

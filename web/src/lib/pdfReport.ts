@@ -7,7 +7,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMsByDay, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMsByPeriod, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
 function fmtDate(iso: string | null | undefined): string {
@@ -106,7 +106,7 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   // Personenstunden = Σ (Arbeitszeit pro Tag × Anzahl Mitarbeiter dieses Tages).
   // Multi-day-correct: respects per-day staffing snapshots stored in events.
   const personCount = Array.isArray(task.person_ids) ? task.person_ids.length : 0;
-  const personHoursReport = wf ? personHoursMsByDay(wf, personCount) : { totalMs: 0, days: [] };
+  const personHoursReport = wf ? personHoursMsByPeriod(wf, personCount) : { totalMs: 0, periods: [] };
   const personHours = personHoursReport.totalMs;
   const events: WorkflowEvent[] = wf && wf.events
     ? [...wf.events].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
@@ -245,12 +245,11 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   // @ts-ignore — lastAutoTable is injected by autotable
   cursorY = (doc as any).lastAutoTable.finalY + 9;
 
-  // ===== SECTION: Personenstunden — Tag-für-Tag-Aufschlüsselung =====
-  // Only rendered when there are 2+ working days OR per-day staffing varies.
-  // Shows EXACTLY how the total was computed so admins can audit the figure.
-  if (personHoursReport.days.length > 0 && (
-    personHoursReport.days.length >= 2 ||
-    personHoursReport.days.some((d) => d.personCount !== personCount)
+  // ===== SECTION: Personenstunden — Tag-für-Tag / Period-für-Period =====
+  // Renders sub-periods so each "mitarbeiter_hinzu" event splits a day.
+  if (personHoursReport.periods.length > 0 && (
+    personHoursReport.periods.length >= 2 ||
+    personHoursReport.periods.some((p) => p.personCount !== personCount)
   )) {
     if (cursorY > pageH - marginBottom - 30) { doc.addPage(); cursorY = marginTop; }
     doc.setFont("helvetica", "bold");
@@ -261,19 +260,18 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
     doc.setLineWidth(0.4);
     doc.line(marginX, cursorY + 1.2, pageW - marginX, cursorY + 1.2);
     cursorY += 4.5;
-    const phRows = personHoursReport.days.map((d) => [
-      d.date,
-      formatDuration(d.workMs),
-      `× ${Math.max(1, d.personCount)}`,
-      formatDuration(d.personHoursMs),
+    const phRows = personHoursReport.periods.map((p) => [
+      `${p.date}  ${p.startHHMM}–${p.endHHMM}`,
+      formatDuration(p.durationMs),
+      `× ${Math.max(1, p.personCount)}`,
+      formatDuration(p.personHoursMs),
     ]);
-    // Final "Gesamt" summary row (bold, highlighted)
     phRows.push(["GESAMT", "", "", formatDuration(personHoursReport.totalMs)]);
     autoTable(doc, {
       startY: cursorY,
       theme: "plain",
       margin: { left: marginX, right: marginX },
-      head: [["Tag", "Arbeitszeit", "Mitarbeiter", "Personenstunden"]],
+      head: [["Tag · Periode", "Arbeitszeit", "Mitarbeiter", "Personenstunden"]],
       body: phRows,
       headStyles: {
         fillColor: [124, 58, 237],
@@ -295,9 +293,9 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
         valign: "top",
       },
       columnStyles: {
-        0: { cellWidth: 36 },
-        1: { cellWidth: 38, font: "courier" },
-        2: { cellWidth: 30, halign: "center" },
+        0: { cellWidth: 60 },
+        1: { cellWidth: 32, font: "courier" },
+        2: { cellWidth: 28, halign: "center" },
         3: { cellWidth: "auto", font: "courier", fontStyle: "bold", halign: "right", textColor: [124, 58, 237] },
       },
       didParseCell: (data) => {

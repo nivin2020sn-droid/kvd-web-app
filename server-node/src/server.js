@@ -1628,7 +1628,11 @@ router.get('/update-info', (req, res) => {
 });
 
 // ===== Workflow (Tablet → Admin live sync) =====
-const VALID_EVENTS = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden', 'feierabend']);
+// `mitarbeiter_hinzu` is a MARKER event — it does NOT change status / segments,
+// it only records the addition of a Mitarbeiter and the new persons snapshot.
+// Personenstunden uses it to split work-segments at the change-point so the
+// added Mitarbeiter is only counted from his join moment forward.
+const VALID_EVENTS = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden', 'feierabend', 'mitarbeiter_hinzu']);
 const USER_EVENT_TYPES = new Set(['vorbereiten', 'starten', 'pause', 'fortsetzen', 'beenden', 'feierabend']);
 
 function tomorrowStr(fromDate) {
@@ -1800,7 +1804,7 @@ router.get('/workflows/:task_id', async (req, res) => {
 
 // POST event → apply, persist, broadcast
 router.post('/workflows/:task_id/event', async (req, res) => {
-  const { type, note, task_name, author_id, author_name } = req.body || {};
+  const { type, note, task_name, author_id, author_name, persons } = req.body || {};
   if (!VALID_EVENTS.has(type)) return res.status(400).json({ detail: 'Invalid event type' });
   const existing = await WorkflowModel.findOne({ task_id: req.params.task_id }, { _id: 0 }).lean();
   const base = existing || {
@@ -1810,7 +1814,14 @@ router.post('/workflows/:task_id/event', async (req, res) => {
   };
   // Snapshot current person_ids of the task (so we know who worked today)
   const taskDoc = await TaskModel.findOne({ id: req.params.task_id }, { _id: 0 }).lean();
-  const personsSnapshot = taskDoc?.person_ids ? [...taskDoc.person_ids] : [];
+  // For `mitarbeiter_hinzu` events, the client supplies the NEW full persons
+  // list (current + the added Mitarbeiter) — this becomes the snapshot for
+  // the event AND replaces the task's person_ids further down.
+  // For every other event we keep the existing current snapshot.
+  const personsSnapshot =
+    type === 'mitarbeiter_hinzu' && Array.isArray(persons)
+      ? [...new Set(persons.filter(Boolean))]
+      : (taskDoc?.person_ids ? [...taskDoc.person_ids] : []);
   const author = (author_id || author_name)
     ? { id: author_id || undefined, name: (typeof author_name === 'string' ? author_name.trim() : '') || undefined }
     : undefined;
@@ -1865,6 +1876,19 @@ router.post('/workflows/:task_id/event', async (req, res) => {
       { $set: { completed_date: today, continue_tomorrow: false, next_work_date: null } },
     );
     console.log(`✅ [beenden] task=${taskDoc.id} type="${taskDoc.task_type}"  completed_date=${today}`);
+    broadcast({ type: 'tasks_updated' });
+  }
+  // On `mitarbeiter_hinzu`: also persist the new Mitarbeiter on the task's
+  // person_ids. The `personsSnapshot` parameter carries the complete new list
+  // (current persons + the added one). We OVERWRITE person_ids with this
+  // snapshot so future events / Personenstunden see the updated roster.
+  if (type === 'mitarbeiter_hinzu' && taskDoc && Array.isArray(personsSnapshot)) {
+    const newPersons = [...new Set(personsSnapshot.filter(Boolean))];
+    await TaskModel.updateOne(
+      { id: req.params.task_id },
+      { $set: { person_ids: newPersons } },
+    );
+    console.log(`➕ [mitarbeiter_hinzu] task=${taskDoc.id}  persons=[${newPersons.join(', ')}]`);
     broadcast({ type: 'tasks_updated' });
   }
   broadcast({ type: 'workflow_updated', workflow: updated });

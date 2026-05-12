@@ -437,6 +437,56 @@ frontend:
           columns. Verified by headless jsPDF render — each line emits its own
           Tj op.
 
+  - task: "Mitarbeiter mid-task hinzufügen + Period-based Personenstunden"
+    implemented: true
+    working: true
+    file: "/app/server-node/src/server.js, /app/web/src/lib/workflow.ts, /app/web/src/lib/pdfReport.ts, /app/web/src/lib/printReport.ts, /app/web/src/App.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Added a "+ Mitarbeiter hinzufügen" button on every active task card.
+          On click → modal lists available persons (excluding already-assigned).
+          Selecting & confirming records a NEW event type `mitarbeiter_hinzu`
+          with the FULL new persons list as snapshot. The server:
+            • whitelists the new event type
+            • uses the snapshot as the event.persons (instead of taskDoc.person_ids)
+            • OVERWRITES task.person_ids with the new dedup'd list
+            • broadcasts tasks_updated so all clients refresh
+
+          Personenstunden calculation upgraded from per-day to PER-PERIOD:
+            • New API: personHoursMsByPeriod(wf, fallback) returns
+              { totalMs, periods: PersonHoursPeriod[] } where each period is
+              a sub-segment with constant person count.
+            • Periods are bounded by:
+                – work segment limits (starten / pause / feierabend / beenden)
+                – every mitarbeiter_hinzu event whose ts falls inside a segment
+            • personHoursMsByDay kept as a backwards-compat wrapper aggregating
+              periods into days.
+
+          UI:
+            • Admin card / Archive card / Tablet pill — show the period-accurate
+              total only.
+            • DailyBreakdownView's "Tag-für-Tag" panel now shows ONE row per
+              sub-period (e.g. "07:00–09:00 × 2 = 04:00") with a final Gesamt.
+            • PDF report column header → "Tag · Periode"; rows are
+              "YYYY-MM-DD  HH:MM–HH:MM" with a violet GESAMT line.
+            • Print HTML mirrors the PDF table.
+
+          Verified with the user's exact example (E2E with real Mongo + server):
+            07:00 starten (2 Mitarbeiter)
+            09:00 mitarbeiter_hinzu (+1 → 3)
+            15:00 beenden
+            → periods: 07:00-09:00 ×2 = 04:00:00
+                        09:00-15:00 ×3 = 18:00:00
+              TOTAL                    = 22:00:00  ✅
+
+          Out of scope (per user spec): no edit / no removal in this iteration.
+          The button is hidden when status == "finished".
+
   - task: "Personenstunden field — Per-day calculation (multi-day correct)"
     implemented: true
     working: true

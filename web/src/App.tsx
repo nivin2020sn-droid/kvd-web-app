@@ -16,6 +16,7 @@ import {
   totalPauseMs,
   personHoursMs,
   personHoursMsByDay,
+  personHoursMsByPeriod,
   formatDuration,
   formatTime,
   formatDateTime,
@@ -337,6 +338,10 @@ function AdminHome() {
   const [undoTask, setUndoTask] = useState<Task | null>(null);
   const [mediaTask, setMediaTask] = useState<Task | null>(null);
   const [archiveConfirm, setArchiveConfirm] = useState<{ task: Task; wf: TaskWorkflow } | null>(null);
+  // Add-Mitarbeiter modal: target task whose person_ids should be extended
+  // with a new Mitarbeiter at the current moment. Personenstunden picks up
+  // the change from the next sub-period onward.
+  const [addPersonsTask, setAddPersonsTask] = useState<Task | null>(null);
   // Collapse/Expand — purely visual. Only ONE task card expanded at a time.
   // By default: all collapsed. Tapping a header toggles it; tapping another
   // card's header collapses the previous one. Finished tasks stay collapsed
@@ -671,6 +676,21 @@ function AdminHome() {
                 </button>
               </div>
 
+              {/* + Mitarbeiter hinzufügen — fügt einen Mitarbeiter MITTEN in der
+                  laufenden Aufgabe hinzu. Der neue Mitarbeiter wird erst AB DIESEM
+                  Moment in die Personenstunden gezählt — nicht rückwirkend.
+                  Erzeugt ein "mitarbeiter_hinzu" Event in der Timeline und
+                  aktualisiert task.person_ids serverseitig. */}
+              {wfStatus !== "finished" && (
+                <button
+                  onClick={() => setAddPersonsTask(t)}
+                  className="h-10 w-full rounded-lg border-2 text-xs font-black tracking-wide active:scale-95 transition flex items-center justify-center gap-1.5 mt-1"
+                  style={{ borderColor: "#A78BFA", backgroundColor: "#A78BFA15", color: "#C4B5FD" }}
+                >
+                  <span aria-hidden>👥</span> + MITARBEITER HINZUFÜGEN
+                </button>
+              )}
+
               {/* Media + PDF herunterladen (prominent row) */}
               <div className="grid grid-cols-2 gap-2 mt-1">
                 <button
@@ -754,6 +774,14 @@ function AdminHome() {
         currentUserName="Admin"
         onClose={() => setMediaTask(null)}
         onPhotosChanged={() => load()}
+      />
+    )}
+    {addPersonsTask && (
+      <AddMitarbeiterModal
+        task={addPersonsTask}
+        persons={persons}
+        onClose={() => setAddPersonsTask(null)}
+        onAdded={() => { setAddPersonsTask(null); load(); }}
       />
     )}
     {archiveConfirm /* defensive: archive system removed; keep state harmless */ && null}
@@ -843,6 +871,150 @@ const AdminCell = ({ label, value, color }: { label: string; value: string; colo
     <div className="text-sm font-bold" style={{ color: color || "#fff" }}>{value}</div>
   </div>
 );
+
+// =====================================================================
+// AddMitarbeiterModal — adds a Mitarbeiter to a task DURING execution.
+// • The new Mitarbeiter is counted in Personenstunden ONLY from the
+//   timestamp of this action onward (server records ts = now).
+// • Persists by sending POST /workflows/:id/event with type
+//   "mitarbeiter_hinzu" + the NEW full persons list. The server updates
+//   task.person_ids and pushes the event into the workflow timeline.
+// • No editing / no removal in this first iteration (per user spec).
+// =====================================================================
+function AddMitarbeiterModal({ task, persons, onClose, onAdded }: {
+  task: Task;
+  persons: SimpleItem[];
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const [pickedId, setPickedId] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const already = new Set(task.person_ids || []);
+  const candidates = persons.filter((p) => !already.has(p.id));
+  const pickedName = persons.find((p) => p.id === pickedId)?.name || "";
+
+  const handleConfirm = async () => {
+    if (!pickedId) return;
+    setBusy(true); setErr("");
+    try {
+      // Compose the NEW persons list (current + picked one, dedup).
+      const newPersons = Array.from(new Set([...(task.person_ids || []), pickedId]));
+      // Audit-friendly note that ends up in the Timeline AND PDF.
+      const nowHHMM = new Date().toLocaleTimeString("de-DE", {
+        hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin",
+      });
+      const note = `Mitarbeiter ${pickedName} hinzugefügt um ${nowHHMM}`;
+      await recordEvent(task.id, "mitarbeiter_hinzu", note, task.task_type || "", newPersons);
+      onAdded();
+    } catch (e: any) {
+      setErr(e?.message || "Fehler beim Hinzufügen");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/80 flex items-end sm:items-center justify-center p-3">
+      <div
+        className="w-full max-w-md rounded-2xl p-4 space-y-3 max-h-[90vh] overflow-y-auto"
+        style={{ backgroundColor: "rgba(24,24,28,0.98)", border: "2px solid #A78BFA" }}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-2xl" aria-hidden>👥</span>
+          <div>
+            <h3 className="text-base font-black tracking-wide" style={{ color: "#C4B5FD" }}>
+              Mitarbeiter hinzufügen
+            </h3>
+            <div className="text-[11px] opacity-65">
+              {task.task_type} · Haus {task.haus} · Station {task.station}
+            </div>
+          </div>
+        </div>
+
+        {/* Info box explaining the timing semantics */}
+        <div className="rounded-lg px-3 py-2 text-[11px] leading-snug"
+          style={{ backgroundColor: "rgba(167,139,250,0.08)", color: "rgba(255,255,255,0.78)", border: "1px solid rgba(167,139,250,0.25)" }}>
+          ℹ️ Der ausgewählte Mitarbeiter wird <span className="font-bold" style={{ color: "#C4B5FD" }}>ab jetzt</span>{" "}
+          in die <span className="font-bold">Personenstunden</span> einbezogen — die vorherige Arbeitszeit bleibt unverändert.
+          <span className="block mt-1 opacity-70">Gesamt-Arbeitszeit wird NICHT verändert.</span>
+        </div>
+
+        {err && (
+          <div className="text-xs p-2 rounded-lg border"
+            style={{ borderColor: "#FF6B6B44", backgroundColor: "#FF6B6B14", color: "#FF6B6B" }}>
+            {err}
+          </div>
+        )}
+
+        {/* Current persons (read-only listing) */}
+        {(task.person_ids?.length || 0) > 0 && (
+          <div>
+            <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase mb-1.5">Aktuelle Mitarbeiter</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(task.person_ids || []).map((pid) => {
+                const name = persons.find((p) => p.id === pid)?.name || pid;
+                return (
+                  <span key={pid} className="px-2 py-1 rounded text-[11px] font-bold"
+                    style={{ backgroundColor: "rgba(0,230,118,0.10)", color: "#00E676", border: "1px solid rgba(0,230,118,0.35)" }}>
+                    ✓ {name}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Picker */}
+        <div>
+          <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase mb-1.5">
+            Hinzuzufügender Mitarbeiter {candidates.length === 0 && <span className="opacity-50">— alle bereits zugewiesen</span>}
+          </div>
+          {candidates.length === 0 ? (
+            <div className="text-xs italic opacity-50">Keine weiteren Mitarbeiter verfügbar.</div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {candidates.map((p) => {
+                const selected = pickedId === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => setPickedId(p.id)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95"
+                    style={{
+                      backgroundColor: selected ? "rgba(167,139,250,0.25)" : "rgba(255,255,255,0.04)",
+                      color: selected ? "#C4B5FD" : "rgba(255,255,255,0.85)",
+                      border: `1px solid ${selected ? "#A78BFA" : "rgba(255,255,255,0.12)"}`,
+                    }}
+                  >
+                    {selected ? "● " : ""}{p.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 pt-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="h-11 rounded-lg border border-white/20 text-white/80 text-sm font-bold active:scale-95 transition disabled:opacity-50"
+          >
+            Abbrechen
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={busy || !pickedId}
+            className="h-11 rounded-lg text-sm font-black active:scale-95 transition disabled:opacity-40"
+            style={{ backgroundColor: "#A78BFA", color: "#0E0E12" }}
+          >
+            {busy ? "Hinzufügen…" : "+ HINZUFÜGEN"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ============ TimeEditModal — Admin kann einzelne Event-Zeitpunkte anpassen ============
 function TimeEditModal({ task, workflow, busy, onClose, onSave }: {
@@ -1158,28 +1330,45 @@ function DailyBreakdownView({ wf, persons, dark = true, personCount = 0 }: { wf:
         </div>
       </div>
       {/* Per-day Personenstunden breakdown — shows how the total was computed.
-          Only rendered when ≥ 2 working days OR when day-counts differ. */}
+          Period-based: each "mitarbeiter_hinzu" event splits a day into
+          sub-periods. Only rendered when ≥ 2 periods OR mixed staffing. */}
       {(() => {
-        const ph = personHoursMsByDay(wf, personCount);
-        if (ph.days.length === 0) return null;
-        const showBreakdown = ph.days.length >= 2 || ph.days.some((d) => d.personCount !== personCount);
+        const ph = personHoursMsByPeriod(wf, personCount);
+        if (ph.periods.length === 0) return null;
+        const showBreakdown = ph.periods.length >= 2 || ph.periods.some((p) => p.personCount !== personCount);
         if (!showBreakdown) return null;
+        // Group periods by date for compact rendering.
+        const grouped = new Map<string, typeof ph.periods>();
+        for (const p of ph.periods) {
+          const arr = grouped.get(p.date) || [];
+          arr.push(p);
+          grouped.set(p.date, arr);
+        }
         return (
           <div className="rounded-xl border px-3 py-2" style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED10" }}>
             <div className="text-[9px] font-bold tracking-widest uppercase mb-1.5" style={{ color: "#A78BFA" }}>
               👥 Personenstunden — Tag-für-Tag
             </div>
-            <div className="space-y-0.5">
-              {ph.days.map((d) => (
-                <div key={d.date} className="flex items-center justify-between text-xs font-mono tabular-nums" style={{ color: dark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.85)" }}>
-                  <span style={{ color: muted }}>{d.date}</span>
-                  <span>
-                    {formatDuration(d.workMs)}
-                    <span style={{ color: muted }}> × </span>
-                    <span style={{ color: "#A78BFA" }}>{Math.max(1, d.personCount)}</span>
-                    <span style={{ color: muted }}> = </span>
-                    <span className="font-black" style={{ color: "#A78BFA" }}>{formatDuration(d.personHoursMs)}</span>
-                  </span>
+            <div className="space-y-1.5">
+              {[...grouped.entries()].map(([date, periods]) => (
+                <div key={date} className="space-y-0.5">
+                  {periods.length > 1 && (
+                    <div className="text-[10px] font-bold opacity-70" style={{ color: muted }}>{date}</div>
+                  )}
+                  {periods.map((p, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs font-mono tabular-nums" style={{ color: dark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.85)" }}>
+                      <span style={{ color: muted }}>
+                        {periods.length === 1 ? date : `${p.startHHMM}–${p.endHHMM}`}
+                      </span>
+                      <span>
+                        {formatDuration(p.durationMs)}
+                        <span style={{ color: muted }}> × </span>
+                        <span style={{ color: "#A78BFA" }}>{Math.max(1, p.personCount)}</span>
+                        <span style={{ color: muted }}> = </span>
+                        <span className="font-black" style={{ color: "#A78BFA" }}>{formatDuration(p.personHoursMs)}</span>
+                      </span>
+                    </div>
+                  ))}
                 </div>
               ))}
               <div className="flex items-center justify-between text-xs font-mono tabular-nums pt-1 mt-1 border-t" style={{ borderColor: "#7C3AED44" }}>
