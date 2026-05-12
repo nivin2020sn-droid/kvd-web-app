@@ -470,6 +470,10 @@ function recomputeLocal(wf: TaskWorkflow): TaskWorkflow {
         status = "running";
         if (!started_at) started_at = ev.ts;
         paused_at = null;
+        // BUGFIX: auto-close orphan segments (missed Feierabend / Pause) so a
+        // multi-day open segment cannot inflate totalWorkMs to NOW.
+        const prev = segments[segments.length - 1];
+        if (prev && !prev.end) prev.end = ev.ts;
         segments.push({ start: ev.ts, end: null });
         break;
       }
@@ -482,6 +486,8 @@ function recomputeLocal(wf: TaskWorkflow): TaskWorkflow {
       }
       case "fortsetzen": {
         status = "running";
+        const prev = segments[segments.length - 1];
+        if (prev && !prev.end) prev.end = ev.ts;
         segments.push({ start: ev.ts, end: null });
         paused_at = null;
         break;

@@ -430,45 +430,77 @@ frontend:
       - working: true
         agent: "main"
         comment: |
-          User reported that PDF/print reports had:
-            1) Unusually wide letter spacing in body text
-            2) "\n" line breaks NOT preserved in Beschreibung / Notiz / timeline
-            3) No word wrap on long paragraphs
-            4) Bad text alignment (felt justified)
+          Fixed PDF/print: wide letter spacing, missing "\n" breaks, no word
+          wrap, bad alignment. Solution: setCharSpace(0)+setLineHeightFactor(1.4)
+          in PDF; white-space:pre-wrap + letter/word-spacing:normal in HTML;
+          normalizeMultiline() helper; halign:'left' explicit on all autoTable
+          columns. Verified by headless jsPDF render — each line emits its own
+          Tj op.
 
-          Root cause:
-            - HTML print report used esc() to escape text but HTML treats "\n"
-              as whitespace — so multi-line notes collapsed to one paragraph.
-            - PDF didn't normalize CRLF / explicitly disable charSpace.
+  - task: "Admin Zeitkorrektur — Time Inflation (91h instead of 19h) FIX"
+    implemented: true
+    working: true
+    file: "/app/server-node/src/server.js, /app/web/src/lib/workflow.ts, /app/web/src/App.tsx"
+    stuck_count: 0
+    priority: "highest"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          User reported (screenshot): a 7-day rolled-over task whose prior
+          accumulated time was ~13h. Today Admin clicked Zeitkorrektur and
+          moved today's "starten" from 13:06 → 07:00. Expected total ≈ 19h
+          (13 + 6). Actual total: 91:46:20 — wrong by ~72h.
+
+          Root causes (3 stacked bugs):
+            (A) recomputeWorkflow did NOT auto-close an orphan open segment
+                when a new "starten" arrived. So if a previous day's
+                Feierabend was missed and the auto-rollover kicked in, that
+                segment stayed end=null and totalWorkMs counted it all the
+                way to NOW — exploding by hours every minute.
+            (B) autoRolloverOpenTasks rolled the TASK forward but never
+                touched the workflow. A "running" workflow stayed running
+                across day boundaries, growing forever.
+            (C) The Zeit-Edit modal pushed updates for EVERY editable event
+                (because the check `newHHMM !== (e.display_time||"")` is
+                always true for legacy events that have no display_time).
+                Every Zeitkorrektur silently rewrote previous-days' ts —
+                shifting them by 8 seconds and corrupting display_time.
 
           Fixes applied:
-            • printReport.ts:
-                - body { letter-spacing: normal; word-spacing: normal; line-height: 1.55; }
-                - table.info td & .col-notiz now use `white-space: pre-wrap`
-                  (preserves every "\n" the user typed, still wraps long lines).
-                - Explicit `text-align: left` on cells (no justified spacing).
-                - esc() now normalises "\r\n" / "\r" → "\n" before escaping.
+            (1) `recomputeWorkflow` (server) + `recomputeLocal` (frontend):
+                on "starten" / "fortsetzen", auto-close any prior open
+                segment at the event's ts. Guarantees no segment ever has
+                end=null except the active one.
+            (2) `autoRolloverOpenTasks`: when rolling over a task whose
+                workflow status is "running" or "paused", inject a
+                SYNTHETIC `feierabend` event at 23:59:59 of the previous
+                target date. Marked with `auto_generated: true` for audit.
+                Re-runs recomputeWorkflow → segment closes cleanly. Status
+                transitions running → deferred. Broadcasts workflow_updated
+                so the UI refreshes immediately.
+            (3) Zeit-Edit modal: snapshot the initial HH:MM of every row in
+                a useRef (`initialTimes`). On save, ONLY push updates where
+                `times[i] !== initialTimes.current[i]`. Also prefers
+                `e.display_time` when present (avoids TZ-shifted init).
 
-            • pdfReport.ts:
-                - Added `normalizeMultiline()` helper for description / notiz.
-                - At document start: `doc.setCharSpace(0)` + `doc.setLineHeightFactor(1.4)`.
-                - autoTable styles: `overflow: 'linebreak'` (already set) +
-                  explicit `halign: 'left'` + `valign: 'top'` on every column.
-                - Slightly increased cell padding for paragraph readability.
+          End-to-end verification (test_autofb.cjs):
+            Setup: task with workflow running on yesterday 06:00Z (open
+                   segment), continue_tomorrow=true, next_work_date=yesterday.
+            PRE-rollover total: 29:28:06 (grows every minute — bug).
+            GET /api/tasks/today → rollover triggers, auto-Feierabend
+              injected at yesterday 23:59:59Z. Workflow becomes "deferred".
+              Segment closed. Total now: 17:59:59 — STABLE.
+            POST starten today + Admin-Zeitkorrektur → 07:00 (05:00Z).
+            Final total: 24:28:05 — EXACTLY as expected
+              (17:59:59 yesterday-capped + 06:28:06 today since 07:00).
 
-          Verification (headless jsPDF render of the user's example):
-            Input:
-              Mögliche Ursachen:
-              Wassereintritt in den Motor während des Reinigungsvorgangs.
-              Fehlende Schutzabdeckung.
-              Defekt am Tank.
-            PDF output — each line emitted as its OWN Tj (text-show) op:
-              1. "Mögliche Ursachen:"
-              2. "Wassereintritt in den Motor während des Reinigungsvorgangs."
-              3. "Fehlende Schutzabdeckung."
-              4. "Defekt am Tank."
-            ✓ HTML preview screenshot also confirmed each line on its own row,
-              natural left alignment, no letter-spacing artefacts.
+          NO data is lost or modified beyond the additive auto-Feierabend
+          event (which is a positive audit trail entry). Pre-existing
+          completed segments stay untouched. Editing only changes the
+          event(s) the user actually edited.
+
 
 backend:
   - task: "Historical Task Rollover — listTasksForDate + stub decoration"

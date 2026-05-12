@@ -1657,6 +1657,15 @@ function recomputeWorkflow(wf) {
         status = 'running';
         started_at = started_at || ev.ts;
         paused_at = null;
+        // ----- BUGFIX: auto-close any orphan open segment at this starten's ts.
+        // Without this, a missed Feierabend / Pause leaves the previous segment
+        // open with end=null → totalWorkMs counts it all the way to NOW, which
+        // can explode into hundreds of hours after several roll-overs.
+        // The auto-close caps every orphan segment at the next user action
+        // and keeps historical totals stable / monotonic.
+        const prev = segments[segments.length - 1];
+        if (prev && !prev.end) prev.end = ev.ts;
+        // -----
         segments.push({ start: ev.ts, end: null });
         break;
       }
@@ -1669,6 +1678,10 @@ function recomputeWorkflow(wf) {
       }
       case 'fortsetzen': {
         status = 'running';
+        // Same defensive guard for fortsetzen (e.g. if it followed a starten
+        // by mistake, never legitimate but possible after manual ts edits).
+        const prev = segments[segments.length - 1];
+        if (prev && !prev.end) prev.end = ev.ts;
         segments.push({ start: ev.ts, end: null });
         paused_at = null;
         break;
@@ -2104,6 +2117,55 @@ async function autoRolloverOpenTasks(today) {
         $push: { rollover_log: { $each: [newEntry], $slice: -50 } },
       },
     );
+
+    // -----------------------------------------------------------------
+    // BUGFIX (Admin Zeitkorrektur Inflation):
+    // If the workflow is currently RUNNING or PAUSED when we roll over,
+    // the previous day's segment is still OPEN (no Feierabend recorded).
+    // Without intervention, totalWorkMs counts that segment all the way
+    // to NOW — leading to massive over-reporting (e.g. 91h instead of
+    // the expected ~19h).
+    //
+    // We inject a SYNTHETIC `feierabend` event at end-of-day (23:59:59)
+    // of the previous target date. This closes the segment cleanly,
+    // is fully audit-trailed (event has `auto_generated: true`), and
+    // matches what the user *should* have clicked.
+    // -----------------------------------------------------------------
+    if (status === 'running' || status === 'paused') {
+      try {
+        const synthTs = `${prevTarget}T23:59:59.000Z`;
+        await WorkflowModel.findOneAndUpdate(
+          { task_id: t.id },
+          {
+            $push: {
+              events: {
+                type: 'feierabend',
+                ts: synthTs,
+                note: `Auto-Feierabend (Tageswechsel — ${prevTarget} → ${today})`,
+                status_before: status,
+                status_after: 'deferred',
+                task_name: t.task_type || '',
+                auto_generated: true,
+                display_time: '23:59',
+                display_date: prevTarget,
+              },
+            },
+          },
+        );
+        // Recompute the workflow so segments / status reflect the synthetic
+        // Feierabend. This is critical so totalWorkMs stays stable.
+        const wfDoc = await WorkflowModel.findOne({ task_id: t.id }, { _id: 0 }).lean();
+        if (wfDoc) {
+          const recomputed = recomputeWorkflow(wfDoc);
+          await WorkflowModel.findOneAndUpdate({ task_id: t.id }, { $set: recomputed });
+          broadcast({ type: 'workflow_updated', workflow: recomputed });
+        }
+        console.log(`   🛌  Auto-Feierabend @ ${synthTs} eingefügt (Segment geschlossen).`);
+      } catch (e) {
+        console.error('Auto-Feierabend Inject Fehler:', e?.message || e);
+      }
+    }
+    // -----------------------------------------------------------------
     const logEntry = {
       ts: newEntry.ts,
       id: t.id, task_type: t.task_type,

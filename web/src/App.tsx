@@ -845,12 +845,25 @@ function TimeEditModal({ task, workflow, busy, onClose, onSave }: {
   const editable = (workflow.events || [])
     .map((e, i) => ({ e, i }))
     .filter(({ e }) => ["vorbereiten", "starten", "pause", "fortsetzen", "beenden"].includes(e.type) && !e.undone);
+  // Snapshot of the INITIAL hours-and-minutes each editable event had when the
+  // modal opened. Used to detect what the user actually changed (vs. what was
+  // simply auto-filled from the event timestamp).
+  const initialTimes = useRef<Record<number, string>>({});
   const [times, setTimes] = useState<Record<number, string>>(() => {
     const init: Record<number, string> = {};
     for (const { e, i } of editable) {
-      const d = new Date(e.ts);
-      init[i] = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      // PREFER the structured display_time if present (avoids TZ drift),
+      // else derive HH:MM from the timestamp.
+      let hhmm = "";
+      if (typeof e.display_time === "string" && /^\d{2}:\d{2}$/.test(e.display_time)) {
+        hhmm = e.display_time;
+      } else {
+        const d = new Date(e.ts);
+        hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      }
+      init[i] = hhmm;
     }
+    initialTimes.current = { ...init };
     return init;
   });
   const [note, setNote] = useState("");
@@ -862,14 +875,20 @@ function TimeEditModal({ task, workflow, busy, onClose, onSave }: {
       if (!newHHMM) continue;
       const [h, m] = newHHMM.split(":").map((x) => parseInt(x, 10));
       if (isNaN(h) || isNaN(m)) continue;
+      // ---------- BUGFIX (Time Inflation after Admin Zeitkorrektur) ----------
+      // ONLY push an update for events the user actually changed. Without this
+      // guard, every event got rewritten (because the previous condition was
+      // newHHMM !== (e.display_time || "") which is true for every legacy
+      // event without a display_time → all previous days' ts were rewritten,
+      // sometimes silently shifting them by 8 seconds and corrupting display).
+      // -----------------------------------------------------------------------
+      const initial = initialTimes.current[i] ?? "";
+      if (newHHMM === initial) continue;   // user didn't touch this row
       const d = new Date(e.ts);
       d.setHours(h, m, 0, 0);
       const newIso = d.toISOString();
-      if (newIso !== e.ts || newHHMM !== (e.display_time || "")) {
-        // Plain-text display values — ensure NO TZ conversion on display.
-        const display_date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-        updates.push({ index: i, ts: newIso, display_time: newHHMM, display_date });
-      }
+      const display_date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      updates.push({ index: i, ts: newIso, display_time: newHHMM, display_date });
     }
     if (updates.length === 0) { onClose(); return; }
     await onSave(updates, note);
