@@ -571,15 +571,32 @@ router.post('/tasks/admin/collect-open', requireAdmin, async (req, res) => {
 router.post('/tasks/admin/rebuild-history', requireAdmin, async (req, res) => {
   const startedAt = new Date().toISOString();
   const allTasks = await TaskModel.find({}, { _id: 0 }).lean();
-  const wfDocs = await WorkflowModel.find({}, { task_id: 1, status: 1, finished_at: 1 }).lean();
+  // Need full workflow events too — for back-filling manual Feierabend logs.
+  const wfDocs = await WorkflowModel.find(
+    {},
+    { task_id: 1, status: 1, finished_at: 1, events: 1 },
+  ).lean();
   const wfMap = new Map(wfDocs.map((w) => [w.task_id, w]));
 
   const changes = [];
+  let totalFeierabendRecovered = 0;
+
+  // Helper: extract the day-string of an event. Prefer the explicit
+  // display_date (set by the frontend), then fall back to ts.slice(0,10).
+  const eventDay = (e) => {
+    if (!e) return null;
+    if (typeof e.display_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(e.display_date)) {
+      return e.display_date;
+    }
+    if (typeof e.ts === 'string' && e.ts.length >= 10) return e.ts.slice(0, 10);
+    return null;
+  };
 
   for (const t of allTasks) {
     const update = {};
     const synthLog = [];
     let patched = false;
+    let feierabendRecovered = 0;
 
     // 1) Fill original_date if missing
     if (!t.original_date) {
@@ -596,17 +613,80 @@ router.post('/tasks/admin/rebuild-history', requireAdmin, async (req, res) => {
       update.completed_date = cd; patched = true;
     }
 
-    // 3) If the task has clearly moved (original_date !== current live date)
-    //    but rollover_log is empty, synthesise a single archival entry so the
-    //    visit list is correct for stub rendering.
+    // 3) Existing rollover_log (read-only reference)
+    const existingLog = Array.isArray(t.rollover_log) ? t.rollover_log : [];
+    // Build a fast lookup of already-logged feierabend `from` days so
+    // we don't insert duplicates.
+    const loggedFromDays = new Set(
+      existingLog
+        .filter((e) => e && typeof e.from === 'string')
+        .map((e) => e.from),
+    );
+
+    // 4) MAIN BUGFIX — back-fill missing manual Feierabend entries.
+    //    Walk every workflow event. For each MANUAL `feierabend`
+    //    (auto_generated !== true), check whether `rollover_log` has
+    //    an entry whose `from` matches that day. If not, synthesise one.
+    //    The corresponding `to` day is derived as:
+    //      (a) the day of the next `fortsetzen` event after this Feierabend,
+    //      (b) else feierabendDay + 1 (matches what `feierabend` would set),
+    //      (c) else the live date (last-known landing day).
+    const events = Array.isArray(wf?.events) ? wf.events : [];
+    // Sort events chronologically (defensive — they should already be).
+    const sortedEvents = [...events].sort((a, b) => {
+      const ta = typeof a?.ts === 'string' ? a.ts : '';
+      const tb = typeof b?.ts === 'string' ? b.ts : '';
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
+    for (let i = 0; i < sortedEvents.length; i++) {
+      const ev = sortedEvents[i];
+      if (!ev || ev.type !== 'feierabend') continue;
+      if (ev.auto_generated === true) continue; // skip synthetic auto-Feierabend
+      const fromDay = eventDay(ev);
+      if (!fromDay) continue;
+      if (loggedFromDays.has(fromDay)) continue; // already logged → skip
+      // Find the day of the very next fortsetzen after this event (if any).
+      let toDay = null;
+      for (let j = i + 1; j < sortedEvents.length; j++) {
+        const nxt = sortedEvents[j];
+        if (nxt && nxt.type === 'fortsetzen') {
+          toDay = eventDay(nxt);
+          break;
+        }
+      }
+      // Fall back to feierabendDay + 1 (what the handler would have set).
+      if (!toDay) {
+        try { toDay = tomorrowStr(fromDay); } catch { toDay = fromDay; }
+      }
+      synthLog.push({
+        from: fromDay,
+        to: toDay,
+        reason: 'Rebuild: Manueller Feierabend rekonstruiert',
+        ts: typeof ev.ts === 'string' ? ev.ts : new Date().toISOString(),
+        status: 'recovered',
+      });
+      loggedFromDays.add(fromDay);
+      feierabendRecovered++;
+      patched = true;
+    }
+
+    // 5) Legacy safeguard: if a task has clearly moved (original_date !==
+    //    current live date) but rollover_log is STILL empty after the
+    //    feierabend back-fill above, synthesise a single archival entry
+    //    so the visit list is correct for stub rendering.
     const liveDate = (update.completed_date || t.completed_date)
       ? (update.completed_date || t.completed_date)
       : (t.continue_tomorrow && t.next_work_date)
         ? t.next_work_date
         : t.task_date;
     const origDate = update.original_date || t.original_date;
-    const log = Array.isArray(t.rollover_log) ? t.rollover_log : [];
-    if (origDate && liveDate && origDate !== liveDate && log.length === 0) {
+    if (
+      origDate
+      && liveDate
+      && origDate !== liveDate
+      && existingLog.length === 0
+      && synthLog.length === 0
+    ) {
       synthLog.push({
         from: origDate,
         to: liveDate,
@@ -622,12 +702,14 @@ router.post('/tasks/admin/rebuild-history', requireAdmin, async (req, res) => {
       if (Object.keys(update).length) mongoUpdate.$set = update;
       if (synthLog.length) mongoUpdate.$push = { rollover_log: { $each: synthLog, $slice: -50 } };
       await TaskModel.updateOne({ id: t.id }, mongoUpdate);
+      totalFeierabendRecovered += feierabendRecovered;
       changes.push({
         id: t.id,
         task_type: t.task_type,
         original_date_added: update.original_date || null,
         completed_date_added: update.completed_date || null,
         rollover_log_synth: synthLog.length,
+        feierabend_days_recovered: feierabendRecovered,
       });
     }
   }
@@ -637,6 +719,7 @@ router.post('/tasks/admin/rebuild-history', requireAdmin, async (req, res) => {
     ran_at: startedAt,
     scanned: allTasks.length,
     patched: changes.length,
+    total_feierabend_days_recovered: totalFeierabendRecovered,
     changes,
   });
 });
@@ -1835,21 +1918,44 @@ router.post('/workflows/:task_id/event', async (req, res) => {
   // tomorrow — it will appear on tomorrow's day view as "Fortsetzung von gestern"
   // (via the $or query), and also remain visible under its original task_date.
   if (type === 'feierabend' && taskDoc) {
-    const nextDay = tomorrowStr(todayStr());
+    const feierabendDay = todayStr();
+    const nextDay = tomorrowStr(feierabendDay);
     const before = {
       task_date: taskDoc.task_date,
       continue_tomorrow: !!taskDoc.continue_tomorrow,
       next_work_date: taskDoc.next_work_date || null,
       archived: !!taskDoc.archived,
     };
-    await TaskModel.updateOne(
-      { id: req.params.task_id },
-      { $set: { continue_tomorrow: true, next_work_date: nextDay } },
+    // BUGFIX (Historical Stubs disappearing):
+    // Push a rollover_log entry so the day on which the user clicked
+    // Feierabend stays queryable FOREVER via `rollover_log.from`.
+    // Without this entry, a later `fortsetzen` advances task_date away
+    // from `feierabendDay` and there is no field left that matches it
+    // → the Stub "Weitergeschoben auf ..." on that day vanishes.
+    // We dedupe: only push if no entry with same { from, to } exists yet.
+    const existingLog = Array.isArray(taskDoc.rollover_log) ? taskDoc.rollover_log : [];
+    const alreadyLogged = existingLog.some(
+      (e) => e && e.from === feierabendDay && e.to === nextDay,
     );
+    const mongoUpdate = {
+      $set: { continue_tomorrow: true, next_work_date: nextDay },
+    };
+    if (!alreadyLogged) {
+      const feierabendLog = {
+        from: feierabendDay,
+        to: nextDay,
+        reason: 'Manueller Feierabend',
+        ts: new Date().toISOString(),
+        status: 'scheduled',
+      };
+      mongoUpdate.$push = { rollover_log: { $each: [feierabendLog], $slice: -50 } };
+    }
+    await TaskModel.updateOne({ id: req.params.task_id }, mongoUpdate);
     console.log(
       `🌙 [feierabend] task=${taskDoc.id} type="${taskDoc.task_type}"` +
       `  before=${JSON.stringify(before)}` +
-      `  after={ task_date: ${before.task_date}, continue_tomorrow: true, next_work_date: ${nextDay}, archived: false }`,
+      `  after={ task_date: ${before.task_date}, continue_tomorrow: true, next_work_date: ${nextDay}, archived: false }` +
+      `  rollover_log ${alreadyLogged ? 'unchanged (dedup)' : `+= { from: ${feierabendDay}, to: ${nextDay} }`}`,
     );
     broadcast({ type: 'tasks_updated' });
   }

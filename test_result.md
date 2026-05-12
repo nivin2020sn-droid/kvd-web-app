@@ -692,3 +692,52 @@ backend:
           { ran_at, scanned, patched, changes[] }. Tested: 0 patches on clean
           data, 1 synth entry created when log artificially cleared then
           rebuild called.
+
+
+  - task: "BUGFIX — Historical Stubs disappear after manual Feierabend + Fortsetzen"
+    implemented: true
+    working: true
+    file: "/app/server-node/src/server.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "user"
+        comment: |
+          User reported: after a manual `feierabend` on day A followed by
+          `fortsetzen` on day B, the historical "Weitergeschoben auf …" stub
+          on day A disappears. Auto-rollover stubs stayed intact.
+      - working: true
+        agent: "main"
+        comment: |
+          ROOT CAUSE: the `feierabend` handler set continue_tomorrow + next_work_date
+          but never pushed an entry to `rollover_log`. When `fortsetzen` later
+          advances task_date to today, the feierabend day no longer matches any
+          field used by listTasksForDate ($or over task_date / next_work_date /
+          completed_date / original_date / rollover_log.from / rollover_log.to)
+          — so the stub vanished. For tasks whose original_date equals the
+          feierabend day, the original_date safety net masks the bug; for
+          long-running tasks rolled across many days it fully reproduces.
+
+          FIX (Patch 1) — /app/server-node/src/server.js feierabend handler:
+          push a rollover_log entry { from: todayStr(), to: nextDay,
+          reason: 'Manueller Feierabend', status: 'scheduled' } alongside the
+          existing $set, with dedup on { from, to } and the same $slice:-50 cap.
+
+          FIX (Patch 2) — /api/tasks/admin/rebuild-history enhanced to:
+          • Walk every workflow's events array.
+          • For each MANUAL `feierabend` event (auto_generated !== true),
+            if no rollover_log entry already has `from === eventDay`,
+            synthesise one with reason="Rebuild: Manueller Feierabend
+            rekonstruiert", deriving `to` from the next `fortsetzen` event
+            (else feierabendDay+1).
+          • Idempotent — re-running the endpoint does NOT duplicate entries.
+          • Still keeps the legacy archival entry creation as last resort.
+
+          VALIDATION — /tmp/test_stub_fix.cjs spins up the real server.js on
+          an isolated DB and verifies all four scenarios:
+            T1 ✅ manual feierabend now writes rollover_log
+            T2 ✅ stub survives fortsetzen on a cross-day scenario
+            T3 ✅ migration recovers manual feierabend days from pre-patch data
+            T4 ✅ migration is idempotent (no duplicates on re-run)
