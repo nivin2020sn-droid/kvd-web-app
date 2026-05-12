@@ -12,6 +12,7 @@ import { Icon, ICONS } from "./Icons";
 import { api } from "../lib/api";
 import { loadServerConfig } from "../lib/serverConfig";
 import { WARN_SYMBOLS, WarnIcon, getWarnSymbol } from "./WarnSymbols";
+import { buildLagerReportData, exportLagerPDF, exportLagerCSV } from "../lib/lagerReport";
 
 // ---------- Types ----------
 interface LagerFolder {
@@ -184,6 +185,7 @@ function LagerPinScreen() {
 function LagerHome() {
   const [path, setPath] = useState<LagerFolder[]>([]);
   const currentId = path.length ? path[path.length - 1].id : null;
+  const currentFolderName = path.length ? path[path.length - 1].name : null;
   const [folders, setFolders] = useState<LagerFolder[]>([]);
   const [products, setProducts] = useState<LagerProduct[]>([]);
   const [loading, setLoading] = useState(false);
@@ -192,6 +194,12 @@ function LagerHome() {
   const [viewProduct, setViewProduct] = useState<LagerProduct | null>(null);
   const [confirmDel, setConfirmDel] = useState<{ kind: "folder"; item: LagerFolder } | { kind: "product"; item: LagerProduct } | null>(null);
   const [editFolder, setEditFolder] = useState<LagerFolder | null>(null);
+  // Export state: null = closed, "pick" = format chooser, { busy } = working
+  const [exportState, setExportState] = useState<
+    | null
+    | { phase: "pick"; scope: "all" | "folder"; folderId?: string; folderName?: string }
+    | { phase: "busy"; label: string; progress?: { loaded: number; total: number } }
+  >(null);
 
   const load = async () => {
     setLoading(true);
@@ -210,6 +218,51 @@ function LagerHome() {
   const openFolder = (f: LagerFolder) => setPath([...path, f]);
   const navigateTo = (idx: number) => setPath(path.slice(0, idx));
 
+  // -------- Export handler --------
+  // Builds the report data, then writes either a PDF or CSV file to the
+  // user's downloads. Pure READ-only — never touches product data.
+  const runExport = async (fmt: "pdf" | "csv") => {
+    if (!exportState || exportState.phase !== "pick") return;
+    const sess = readSession();
+    const scope = exportState.scope;
+    const folderId = exportState.folderId;
+    const folderName = exportState.folderName;
+    setExportState({ phase: "busy", label: "Lade Daten…" });
+    try {
+      const data = await buildLagerReportData({
+        scope,
+        folderId,
+        folderName: folderName || undefined,
+        lagerPv: sess?.pin_version,
+      });
+      if (data.totals.productCount === 0) {
+        alert("Keine Produkte zum Exportieren gefunden.");
+        setExportState(null);
+        return;
+      }
+      if (fmt === "csv") {
+        setExportState({ phase: "busy", label: "Erzeuge CSV…" });
+        exportLagerCSV(data);
+      } else {
+        setExportState({ phase: "busy", label: "Erzeuge PDF…", progress: { loaded: 0, total: 0 } });
+        await exportLagerPDF(data, {
+          includeImages: true,
+          onProgress: (loaded, total) => {
+            setExportState({
+              phase: "busy",
+              label: `Lade Produktbilder… ${loaded}/${total}`,
+              progress: { loaded, total },
+            });
+          },
+        });
+      }
+      setExportState(null);
+    } catch (e: any) {
+      alert("Export fehlgeschlagen: " + (e?.message || "Unbekannter Fehler"));
+      setExportState(null);
+    }
+  };
+
   return (
     <div className="min-h-full">
       {/* Header */}
@@ -218,12 +271,38 @@ function LagerHome() {
           <div className="text-[10px] font-black tracking-[3px] opacity-60">LAGER</div>
           <Breadcrumb path={path} onJump={navigateTo} />
         </div>
-        <button
-          onClick={() => writeSession(null)}
-          className="text-[11px] font-bold opacity-60 active:opacity-100 px-3 py-1.5 rounded-full border"
-          style={{ borderColor: "rgba(255,255,255,0.2)" }}
-          title="Lager-Sitzung beenden"
-        >Sperren</button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Export button — label depends on context */}
+          <button
+            onClick={() =>
+              setExportState({
+                phase: "pick",
+                scope: currentId ? "folder" : "all",
+                folderId: currentId || undefined,
+                folderName: currentFolderName || undefined,
+              })
+            }
+            className="text-[11px] font-bold px-3 py-1.5 rounded-full border flex items-center gap-1.5 active:scale-95 transition"
+            style={{
+              borderColor: "rgba(167,139,250,0.4)",
+              backgroundColor: "rgba(167,139,250,0.12)",
+              color: "#C4B5FD",
+            }}
+            title={currentId ? "Bericht für diesen Ordner" : "Bericht für das gesamte Lager"}
+          >
+            <Icon d={ICONS.download} size={14} color="#C4B5FD" />
+            <span className="hidden sm:inline">
+              {currentId ? "Ordnerbericht exportieren" : "Gesamtlager exportieren"}
+            </span>
+            <span className="sm:hidden">Export</span>
+          </button>
+          <button
+            onClick={() => writeSession(null)}
+            className="text-[11px] font-bold opacity-60 active:opacity-100 px-3 py-1.5 rounded-full border"
+            style={{ borderColor: "rgba(255,255,255,0.2)" }}
+            title="Lager-Sitzung beenden"
+          >Sperren</button>
+        </div>
       </div>
 
       {/* Catalog grid */}
@@ -327,6 +406,75 @@ function LagerHome() {
       {confirmDel && (
         <ConfirmDeleteModal target={confirmDel}
           onClose={() => setConfirmDel(null)} onDeleted={() => { setConfirmDel(null); load(); }} />
+      )}
+
+      {/* Export format chooser */}
+      {exportState?.phase === "pick" && (
+        <Modal
+          onClose={() => setExportState(null)}
+          title={
+            exportState.scope === "folder"
+              ? `Ordnerbericht — ${exportState.folderName || "Ordner"}`
+              : "Gesamtlager-Bericht"
+          }
+        >
+          <div className="text-[12px] opacity-70 mb-3 leading-relaxed">
+            Wähle das gewünschte Format. Beide Berichte enthalten alle Produkte
+            sortiert nach LAN-Nummer, mit Status-Farbkennzeichnung
+            (<span style={{ color: "#00E676" }}>Grün</span> ·{" "}
+            <span style={{ color: "#FF9F40" }}>Orange</span> ·{" "}
+            <span style={{ color: "#FF4D4F" }}>Rot</span>).
+          </div>
+          <button
+            onClick={() => runExport("pdf")}
+            className="w-full py-4 rounded-xl mb-2 font-bold flex items-center gap-3 px-4 active:scale-[0.98] transition"
+            style={{ backgroundColor: "#A78BFA1A", color: "#A78BFA", border: "1px solid #A78BFA44" }}
+          >
+            <Icon d={ICONS.pdf} size={22} color="#A78BFA" />
+            <div className="text-left flex-1">
+              <div>Als PDF speichern</div>
+              <div className="text-[10px] font-normal opacity-70">Druck-fertig · mit Produktbildern · farbcodiert</div>
+            </div>
+          </button>
+          <button
+            onClick={() => runExport("csv")}
+            className="w-full py-4 rounded-xl font-bold flex items-center gap-3 px-4 active:scale-[0.98] transition"
+            style={{ backgroundColor: "#00E6761A", color: "#00E676", border: "1px solid #00E67644" }}
+          >
+            <Icon d={ICONS.list} size={22} color="#00E676" />
+            <div className="text-left flex-1">
+              <div>Als CSV / Excel speichern</div>
+              <div className="text-[10px] font-normal opacity-70">Bearbeitbar · ; getrennt · UTF-8 BOM</div>
+            </div>
+          </button>
+        </Modal>
+      )}
+
+      {/* Busy overlay during export */}
+      {exportState?.phase === "busy" && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center px-6"
+          style={{ backgroundColor: "rgba(0,0,0,0.6)" }}
+        >
+          <div
+            className="rounded-2xl px-6 py-5 max-w-sm w-full text-center"
+            style={{ backgroundColor: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)" }}
+          >
+            <div className="text-sm font-bold mb-2">Bericht wird erzeugt…</div>
+            <div className="text-[11px] opacity-70">{exportState.label}</div>
+            {exportState.progress && exportState.progress.total > 0 && (
+              <div className="mt-3 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: "rgba(255,255,255,0.08)" }}>
+                <div
+                  className="h-full transition-all"
+                  style={{
+                    width: `${Math.round((exportState.progress.loaded / exportState.progress.total) * 100)}%`,
+                    backgroundColor: "#A78BFA",
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

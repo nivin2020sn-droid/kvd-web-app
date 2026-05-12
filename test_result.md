@@ -741,3 +741,52 @@ backend:
             T2 ✅ stub survives fortsetzen on a cross-day scenario
             T3 ✅ migration recovers manual feierabend days from pre-patch data
             T4 ✅ migration is idempotent (no duplicates on re-run)
+
+  - task: "FEATURE — Lager-Berichte (PDF + CSV Export)"
+    implemented: true
+    working: true
+    file: "/app/web/src/lib/lagerReport.ts, /app/web/src/components/LagerViews.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          New READ-ONLY export feature for the Lager (warehouse) module.
+          Two report scopes:
+            • "Gesamtlager exportieren" — full warehouse, grouped by folder
+            • "Ordnerbericht exportieren" — current folder + all sub-folders
+
+          Two output formats:
+            • PDF — A4 portrait, jsPDF + jspdf-autotable, with embedded
+              product thumbnails (Cloudinary), color-coded rows (green /
+              orange / red) and 4-card summary (gesamt / OK / Niedrig / Leer).
+            • CSV — semicolon-separated, UTF-8 + BOM (Excel-friendly),
+              13 columns incl. Ordner-Pfad, LAN, Menge, Mindestmenge,
+              Status, Warnsymbole, Info.
+
+          Products are sorted by LAN ascending (locale-aware "BA001" <
+          "BB001"; products without LAN sort to the end). Folder groups
+          are sorted by full folder path.
+
+          NEW FILE: /app/web/src/lib/lagerReport.ts
+            • buildLagerReportData({ scope, folderId?, lagerPv })
+            • exportLagerPDF(data, { includeImages, onProgress })
+            • exportLagerCSV(data)
+            • computeStockStatus(p)  — mirrors LagerViews logic
+
+          MODIFIED: /app/web/src/components/LagerViews.tsx
+            • Added export button to LagerHome header (label changes
+              based on whether the user is at root or inside a folder).
+            • Added format-chooser modal + busy overlay with image-
+              loading progress bar.
+            • NO product data is mutated — pure read + download.
+
+          NO BACKEND CHANGES. Existing /lager/folders and /lager/products
+          endpoints already support fetching all (no filter), and require
+          only the X-Lager-Pv header which the frontend already manages.
+
+          Validation: `yarn build` produces a clean production bundle
+          (835 KB main chunk, 8 KB CSS) and `npx tsc --noEmit` passes.
+
