@@ -6,7 +6,7 @@
 
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
 async function resolvePrintWorkflow(taskId: string, fallback: TaskWorkflow | null): Promise<TaskWorkflow | null> {
@@ -86,6 +86,10 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
   const personNames = task.person_ids.map(pn).join(", ") || "—";
   const workMs = wf ? totalWorkMs(wf) : 0;
   const pauseMs = wf ? totalPauseMs(wf) : 0;
+  // 👥 Personenstunden = Arbeitszeit × Anzahl Mitarbeiter (min. 1).
+  // Reine Anzeige-Größe — verändert Arbeitszeit nicht.
+  const personCount = Array.isArray(task.person_ids) ? task.person_ids.length : 0;
+  const personHours = personHoursMs(workMs, personCount);
   const events = buildEventRows(wf);
   const days = wf ? buildDailyBreakdown(wf) : [];
   const multiDay = days.length > 1;
@@ -528,12 +532,20 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
       ${infoRow("Haus", esc(task.haus))}
       ${infoRow("Station", esc(task.station))}
       ${infoRow("Mitarbeiter", esc(personNames))}
+      ${infoRow("Mitarbeiter (Anzahl)", `<strong>${personCount}</strong>`)}
       ${infoRow("Beschreibung", task.description ? esc(task.description) : '<span class="muted">—</span>')}
       ${infoRow("Zeit von", esc(task.time_from))}
       ${infoRow("Zeit bis", esc(task.time_to))}
       ${infoRow("Status", esc(statusLabel))}
       ${infoRow("Gesamt-Arbeitszeit", `<strong>${esc(formatDuration(workMs))}</strong>`)}
       ${infoRow("Pause-Zeit", `<strong>${esc(formatDuration(pauseMs))}</strong>`)}
+      ${infoRow(
+        "👥 Personenstunden",
+        `<strong style="color:#7C3AED;">${esc(formatDuration(personHours))}</strong>` +
+        (personCount > 1
+          ? ` <span class="muted small" style="font-size:9pt;">(${esc(formatDuration(workMs))} × ${personCount} Personen)</span>`
+          : ''),
+      )}
     </tbody>
   </table>
 

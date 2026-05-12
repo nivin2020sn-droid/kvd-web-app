@@ -7,7 +7,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
 function fmtDate(iso: string | null | undefined): string {
@@ -103,6 +103,10 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   const personNames = task.person_ids.map((id) => persons.find((p) => p.id === id)?.name || "—").join(", ") || "—";
   const workMs = wf ? totalWorkMs(wf) : 0;
   const pauseMs = wf ? totalPauseMs(wf) : 0;
+  // Personenstunden = workMs × Anzahl Mitarbeiter (mindestens 1).
+  // Reine abgeleitete Kennzahl — verändert weder Arbeitszeit noch DB-State.
+  const personCount = Array.isArray(task.person_ids) ? task.person_ids.length : 0;
+  const personHours = personHoursMs(workMs, personCount);
   const events: WorkflowEvent[] = wf && wf.events
     ? [...wf.events].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
     : [];
@@ -191,8 +195,11 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
     ["Zeit von", task.time_from || "—"],
     ["Zeit bis", task.time_to || "—"],
     ["Status", statusLabel],
+    ["Mitarbeiter (Anzahl)", String(personCount)],
     ["Gesamt-Arbeitszeit", formatDuration(workMs)],
     ["Pause-Zeit", formatDuration(pauseMs)],
+    // 👥 Personenstunden = Arbeitszeit × Mitarbeiter — gleicher HH:MM:SS-Format.
+    ["Personenstunden", formatDuration(personHours)],
   ];
 
   autoTable(doc, {

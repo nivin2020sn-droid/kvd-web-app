@@ -288,6 +288,25 @@ export function totalWorkMs(wf: TaskWorkflow, nowMs?: number): number {
   return total;
 }
 
+/**
+ * Personenstunden (person-hours) — total HUMAN effort spent on the task.
+ *
+ *   Personenstunden = Gesamt-Arbeitszeit × Anzahl der Mitarbeiter
+ *
+ * Rules per user spec:
+ *   • If exactly 1 Mitarbeiter → equals Gesamt-Arbeitszeit
+ *   • If 0 Mitarbeiter         → multiplier defaults to 1 (treat as solo work)
+ *   • Otherwise                → workMs * count
+ *
+ * NOTE: This is a pure DERIVED value — no persistence, no DB writes, no
+ * impact on the existing time logic. It updates automatically whenever
+ * either the work time or the person count changes.
+ */
+export function personHoursMs(workMs: number, personCount: number): number {
+  const multiplier = Math.max(1, personCount | 0);
+  return Math.max(0, workMs) * multiplier;
+}
+
 /** Call server Admin endpoint: edit event timestamps + append audit event. */
 export async function adminCorrectTimes(
   task_id: string,

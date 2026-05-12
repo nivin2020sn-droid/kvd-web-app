@@ -437,6 +437,49 @@ frontend:
           columns. Verified by headless jsPDF render — each line emits its own
           Tj op.
 
+  - task: "Personenstunden field — Arbeitszeit × Anzahl Mitarbeiter"
+    implemented: true
+    working: true
+    file: "/app/web/src/lib/workflow.ts, /app/web/src/lib/pdfReport.ts, /app/web/src/lib/printReport.ts, /app/web/src/App.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Added a NEW derived field "👥 Personenstunden" everywhere a task is
+          shown: Admin card, Admin detail (DailyBreakdownView totals), Archive
+          detail, Tablet card, PDF report, HTML print report.
+
+          Formula:  Personenstunden = Gesamt-Arbeitszeit × max(1, person_ids.length)
+            • 1 worker  → equals Gesamt-Arbeitszeit
+            • 0 workers → multiplier 1 (defensive)
+            • Display   → same HH:MM:SS format as Arbeitszeit
+
+          Implementation:
+            • lib/workflow.ts → new exported helper personHoursMs(workMs, n).
+            • PDF: `["Mitarbeiter (Anzahl)", ...]` + `["Personenstunden", ...]` rows.
+            • Print HTML: same two rows + violet highlight + small explainer
+              "(06:00:00 × 3 Personen)" when count > 1.
+            • Admin card / Archive card: 2-col layout → 3-col grid with new
+              violet "Personenstunden ×N" cell.
+            • Tablet card: dedicated violet pill below the 4-col grid showing
+              "👥 Personenstunden  HH:MM:SS  (workMs × N Personen)".
+            • DailyBreakdownView accepts personCount prop and shows it as the
+              3rd totals cell, kept in sync wherever it's used.
+
+          Reactivity is automatic — Personenstunden is computed inline from
+          (totalMs, t.person_ids.length) each render. No persistence, no
+          backend change, no impact on time-tracking logic.
+
+          Sanity verified:
+            6:00:00 × 3 → 18:00:00  ✓ (user's example)
+            6:00:00 × 1 → 06:00:00  ✓
+            6:00:00 × 0 → 06:00:00  ✓ (fallback to 1)
+            0     × 5  → 00:00:00  ✓
+            3:14:07 × 2 → 06:28:14  ✓ (precise to the second)
+
   - task: "Admin Zeitkorrektur — Time Inflation (91h instead of 19h) FIX"
     implemented: true
     working: true

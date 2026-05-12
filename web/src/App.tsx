@@ -14,6 +14,7 @@ import {
   saveWorkflow,
   totalWorkMs,
   totalPauseMs,
+  personHoursMs,
   formatDuration,
   formatTime,
   formatDateTime,
@@ -623,15 +624,23 @@ function AdminHome() {
                 <AdminCell label="Beendet" value={formatTime(wf.finished_at)} color={wf.finished_at ? EVENT_COLOR.beenden : undefined} />
               </div>
 
-              {/* Live work timer + Pause total — gleiche Größe, beide identisch */}
-              <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-lg px-3 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
+              {/* Live work timer + Pause total + Personenstunden — 3-col grid */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-lg px-2.5 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
                   <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">{wfStatus === "finished" ? "Gesamt-Arbeitszeit" : "Arbeitszeit"}</div>
-                  <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}{isRunning && <span className="ml-2 text-[10px] tracking-widest" style={{ color: STATUS_COLOR.running }}>● LIVE</span>}</div>
+                  <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}{isRunning && <span className="ml-1.5 text-[9px] tracking-widest" style={{ color: STATUS_COLOR.running }}>● LIVE</span>}</div>
                 </div>
-                <div className="rounded-lg px-3 py-2 border" style={{ borderColor: EVENT_COLOR.pause + "55", backgroundColor: EVENT_COLOR.pause + "12" }}>
+                <div className="rounded-lg px-2.5 py-2 border" style={{ borderColor: EVENT_COLOR.pause + "55", backgroundColor: EVENT_COLOR.pause + "12" }}>
                   <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">Pause-Zeit</div>
-                  <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: EVENT_COLOR.pause }}>{formatDuration(totalPauseMs(wf, Date.now()))}</div>
+                  <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: EVENT_COLOR.pause }}>{formatDuration(totalPauseMs(wf, Date.now()))}</div>
+                </div>
+                {/* 👥 Personenstunden = Arbeitszeit × Anzahl Mitarbeiter (mind. 1).
+                    Reine Anzeige-Größe — kein Einfluss auf die Arbeitszeit-Berechnung. */}
+                <div className="rounded-lg px-2.5 py-2 border" style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED12" }}>
+                  <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">
+                    Personenstunden{(t.person_ids?.length || 0) > 1 && <span className="ml-1 opacity-90" style={{ color: "#A78BFA" }}>×{t.person_ids.length}</span>}
+                  </div>
+                  <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMs(totalMs, t.person_ids?.length || 0))}</div>
                 </div>
               </div>
 
@@ -646,7 +655,7 @@ function AdminHome() {
               )}
 
               {/* Vollständiger Verlauf aller Ereignisse (pro Tag gruppiert falls mehrtägig) */}
-              <DailyBreakdownView wf={wf} persons={persons} dark={true} />
+              <DailyBreakdownView wf={wf} persons={persons} dark={true} personCount={t.person_ids?.length || 0} />
 
               {/* Actions: Bearbeiten | Drucken | Löschen */}
               <div className="grid grid-cols-3 gap-2 mt-1">
@@ -1045,7 +1054,7 @@ const ToolBtn = ({ onClick, icon, label, primary }: any) => (
 // ============ DailyBreakdownView ============
 // Shows a task's events and times split by calendar day (dailyWorkLog).
 // Used in Admin and Archive when a task spans >1 day (Feierabend → Fortsetzen next day).
-function DailyBreakdownView({ wf, persons, dark = true }: { wf: TaskWorkflow; persons: SimpleItem[]; dark?: boolean }) {
+function DailyBreakdownView({ wf, persons, dark = true, personCount = 0 }: { wf: TaskWorkflow; persons: SimpleItem[]; dark?: boolean; personCount?: number }) {
   const days: DaySection[] = buildDailyBreakdown(wf);
   if (days.length === 0) return <EventHistoryList events={wf.events || []} dark={dark} />;
   // If only one day, just show the regular event list (avoids clutter for single-day tasks).
@@ -1131,7 +1140,7 @@ function DailyBreakdownView({ wf, persons, dark = true }: { wf: TaskWorkflow; pe
         );
       })}
       {/* Totals */}
-      <div className="grid grid-cols-2 gap-2 rounded-xl border px-3 py-2" style={{ borderColor: border, backgroundColor: subBg }}>
+      <div className="grid grid-cols-3 gap-2 rounded-xl border px-3 py-2" style={{ borderColor: border, backgroundColor: subBg }}>
         <div>
           <div className="text-[9px] font-bold tracking-widest uppercase" style={{ color: muted }}>Gesamt-Arbeitszeit</div>
           <div className="font-mono tabular-nums text-base font-black" style={{ color: STATUS_COLOR.running }}>{formatDuration(totalWorkMs(wf))}</div>
@@ -1139,6 +1148,12 @@ function DailyBreakdownView({ wf, persons, dark = true }: { wf: TaskWorkflow; pe
         <div>
           <div className="text-[9px] font-bold tracking-widest uppercase" style={{ color: muted }}>Gesamt-Pause-Zeit</div>
           <div className="font-mono tabular-nums text-base font-black" style={{ color: EVENT_COLOR.pause }}>{formatDuration(totalPauseMs(wf))}</div>
+        </div>
+        <div>
+          <div className="text-[9px] font-bold tracking-widest uppercase" style={{ color: muted }}>
+            Personenstunden{personCount > 1 && <span className="ml-1" style={{ color: "#A78BFA" }}>×{personCount}</span>}
+          </div>
+          <div className="font-mono tabular-nums text-base font-black" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMs(totalWorkMs(wf), personCount))}</div>
         </div>
       </div>
     </div>
@@ -1701,17 +1716,23 @@ function AdminArchive() {
                     <AdminCell label="Beendet" value={formatTime(wf.finished_at)} color={wf.finished_at ? EVENT_COLOR.beenden : undefined} />
                     <AdminCell label="Pause-Anzahl" value={String((wf.events || []).filter(e => e.type === 'pause').length)} color={EVENT_COLOR.pause} />
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-lg px-3 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-lg px-2.5 py-2 border" style={{ borderColor: STATUS_COLOR[wfStatus] + "55", backgroundColor: STATUS_COLOR[wfStatus] + "12" }}>
                       <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">Gesamt</div>
-                      <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}</div>
+                      <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: STATUS_COLOR[wfStatus] }}>{formatDuration(totalMs)}</div>
                     </div>
-                    <div className="rounded-lg px-3 py-2 border" style={{ borderColor: EVENT_COLOR.pause + "55", backgroundColor: EVENT_COLOR.pause + "12" }}>
+                    <div className="rounded-lg px-2.5 py-2 border" style={{ borderColor: EVENT_COLOR.pause + "55", backgroundColor: EVENT_COLOR.pause + "12" }}>
                       <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">Pause-Zeit</div>
-                      <div className="font-mono tabular-nums text-xl font-black leading-tight" style={{ color: EVENT_COLOR.pause }}>{formatDuration(pauseMs)}</div>
+                      <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: EVENT_COLOR.pause }}>{formatDuration(pauseMs)}</div>
+                    </div>
+                    <div className="rounded-lg px-2.5 py-2 border" style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED12" }}>
+                      <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">
+                        Personenstunden{(t.person_ids?.length || 0) > 1 && <span className="ml-1" style={{ color: "#A78BFA" }}>×{t.person_ids.length}</span>}
+                      </div>
+                      <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMs(totalMs, t.person_ids?.length || 0))}</div>
                     </div>
                   </div>
-                  <DailyBreakdownView wf={wf} persons={persons} dark={true} />
+                  <DailyBreakdownView wf={wf} persons={persons} dark={true} personCount={t.person_ids?.length || 0} />
                 </>
               )}
               {/* Drucken + PDF buttons (always visible in Archive) */}
@@ -2499,6 +2520,26 @@ function Tablet() {
                     mono
                     highlight={isRunning ? "#3B82F6" : wfStatus === "finished" ? "#00E676" : undefined}
                   />
+                </div>
+                {/* 👥 Personenstunden — eigene Zeile damit der HH:MM:SS-Wert
+                    immer vollständig sichtbar bleibt. Reine Anzeige-Größe:
+                    Arbeitszeit × Anzahl Mitarbeiter (mind. 1). */}
+                <div className="rounded-xl border px-3 py-2 mt-1 flex items-center justify-between gap-2"
+                  style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED14" }}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-base" aria-hidden>👥</span>
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-bold tracking-widest uppercase" style={{ color: dark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.7)" }}>
+                        Personenstunden
+                      </div>
+                      <div className="text-[10px]" style={{ color: dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.5)" }}>
+                        {formatDuration(totalMs)} × {Math.max(1, t.person_ids?.length || 0)} {Math.max(1, t.person_ids?.length || 0) === 1 ? "Person" : "Personen"}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="font-mono tabular-nums text-lg font-black" style={{ color: "#A78BFA" }}>
+                    {formatDuration(personHoursMs(totalMs, t.person_ids?.length || 0))}
+                  </div>
                 </div>
 
                 {/* Aktuelle Notiz (current/last note) */}
