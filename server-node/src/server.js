@@ -1853,16 +1853,49 @@ router.post('/workflows/:task_id/event', async (req, res) => {
     );
     broadcast({ type: 'tasks_updated' });
   }
-  // On Fortsetzen: if the task was marked to continue tomorrow, clear the flags
-  // (the continuation has now happened, so it no longer needs to show on future days).
+  // On Fortsetzen: if the task was marked to continue tomorrow, advance the
+  // task to its new "live day" (today) and PRESERVE the historical trail.
+  //
+  // BUGFIX (Option C — agreed with user):
+  //   The previous version cleared `continue_tomorrow` / `next_work_date`
+  //   WITHOUT pushing a rollover_log entry. Result:
+  //     • task_date stayed on the original day  → live_date computed back to
+  //       yesterday → the day-view showed the task LIVE on yesterday AND
+  //       the historical stub disappeared.
+  //   The new logic mirrors `autoRolloverOpenTasks`:
+  //     1. Push a `rollover_log` entry  { from: prev_target, to: today,
+  //        reason: 'Manuelle Fortsetzung' }  so the audit trail is complete.
+  //     2. Set `task_date = today`  → computeLiveDate() resolves to today.
+  //     3. Clear `continue_tomorrow` / `next_work_date` (user resumed work,
+  //        so the "scheduled continuation" no longer applies).
+  //     4. `original_date` is NEVER touched — it stays anchored on the day
+  //        the task was originally created.
+  //     5. `rollover_log` is appended (capped at 50 entries) — never wiped.
   if (type === 'fortsetzen' && taskDoc?.continue_tomorrow) {
+    const today = todayStr();
+    const prevTarget = taskDoc.next_work_date || taskDoc.task_date || today;
+    const log = {
+      from: prevTarget,
+      to: today,
+      reason: 'Manuelle Fortsetzung',
+      ts: new Date().toISOString(),
+      status: 'resumed',
+    };
+    // Only advance task_date if it would actually move forward; never push
+    // it backwards. Defensive: prev_target should normally be <= today.
+    const update = {
+      $set: {
+        continue_tomorrow: false,
+        next_work_date: null,
+      },
+      $push: { rollover_log: { $each: [log], $slice: -50 } },
+    };
+    if (taskDoc.task_date !== today) update.$set.task_date = today;
+    await TaskModel.updateOne({ id: req.params.task_id }, update);
     console.log(
       `▶ [fortsetzen] task=${taskDoc.id} type="${taskDoc.task_type}"` +
-      `  clearing continue_tomorrow (was ${taskDoc.next_work_date})`,
-    );
-    await TaskModel.updateOne(
-      { id: req.params.task_id },
-      { $set: { continue_tomorrow: false, next_work_date: null } },
+      `  rollover_log += { from: ${prevTarget}, to: ${today} }` +
+      `  task_date: ${taskDoc.task_date} → ${today}`,
     );
     broadcast({ type: 'tasks_updated' });
   }
