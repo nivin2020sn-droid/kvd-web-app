@@ -301,10 +301,58 @@ export function totalWorkMs(wf: TaskWorkflow, nowMs?: number): number {
  * NOTE: This is a pure DERIVED value — no persistence, no DB writes, no
  * impact on the existing time logic. It updates automatically whenever
  * either the work time or the person count changes.
+ *
+ * ⚠️ DEPRECATED for multi-day tasks — use `personHoursMsByDay()` instead.
+ * Kept for backwards compatibility / single-day fallback.
  */
 export function personHoursMs(workMs: number, personCount: number): number {
   const multiplier = Math.max(1, personCount | 0);
   return Math.max(0, workMs) * multiplier;
+}
+
+/** Single line in the per-day Personenstunden breakdown. */
+export interface PersonHoursDay {
+  date: string;          // YYYY-MM-DD
+  workMs: number;        // work time this day (segment overlap with day bounds)
+  personCount: number;   // distinct assigned persons that day (from event snapshots)
+  personHoursMs: number; // workMs * max(1, personCount)
+}
+
+/**
+ * Compute Personenstunden CORRECTLY for multi-day tasks.
+ *
+ *   Personenstunden = Σ (workMs_day × max(1, personCount_day))
+ *
+ * Where personCount_day comes from the PER-DAY event `persons` snapshot
+ * (captured at the moment the user clicked Starten / Pause / etc on that day).
+ * This means a task that ran:
+ *    Tag 1: 8h × 2 Mitarbeiter = 16h
+ *    Tag 2: 6h × 3 Mitarbeiter = 18h
+ *    Tag 3: 4h × 1 Mitarbeiter =  4h
+ *  → Gesamt-Personenstunden = 38h    (NOT 18h × current_count)
+ *
+ * Fallback: if a day has no event-level persons snapshot (legacy data),
+ * use `fallbackPersonCount` (= the task's current person_ids length).
+ *
+ * Returns BOTH the per-day breakdown AND the grand total.
+ */
+export function personHoursMsByDay(
+  wf: TaskWorkflow,
+  fallbackPersonCount: number,
+  nowMs?: number,
+): { totalMs: number; days: PersonHoursDay[] } {
+  if (!wf) return { totalMs: 0, days: [] };
+  const breakdown = buildDailyBreakdown(wf, nowMs);
+  // Drop days that contributed no work (e.g. timeline-only events on a day).
+  const workingDays = breakdown.filter((d) => d.workMs > 0);
+  const fallback = Math.max(0, fallbackPersonCount | 0);
+  const days: PersonHoursDay[] = workingDays.map((d) => {
+    const count = (d.persons && d.persons.length) ? d.persons.length : fallback;
+    const mult = Math.max(1, count);
+    return { date: d.date, workMs: d.workMs, personCount: count, personHoursMs: d.workMs * mult };
+  });
+  const totalMs = days.reduce((acc, x) => acc + x.personHoursMs, 0);
+  return { totalMs, days };
 }
 
 /** Call server Admin endpoint: edit event timestamps + append audit event. */

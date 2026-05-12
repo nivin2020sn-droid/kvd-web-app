@@ -7,7 +7,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { Task, SimpleItem } from "./types";
 import type { TaskWorkflow, WorkflowEvent } from "./workflow";
-import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMs, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
+import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMsByDay, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
 function fmtDate(iso: string | null | undefined): string {
@@ -103,10 +103,11 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   const personNames = task.person_ids.map((id) => persons.find((p) => p.id === id)?.name || "—").join(", ") || "—";
   const workMs = wf ? totalWorkMs(wf) : 0;
   const pauseMs = wf ? totalPauseMs(wf) : 0;
-  // Personenstunden = workMs × Anzahl Mitarbeiter (mindestens 1).
-  // Reine abgeleitete Kennzahl — verändert weder Arbeitszeit noch DB-State.
+  // Personenstunden = Σ (Arbeitszeit pro Tag × Anzahl Mitarbeiter dieses Tages).
+  // Multi-day-correct: respects per-day staffing snapshots stored in events.
   const personCount = Array.isArray(task.person_ids) ? task.person_ids.length : 0;
-  const personHours = personHoursMs(workMs, personCount);
+  const personHoursReport = wf ? personHoursMsByDay(wf, personCount) : { totalMs: 0, days: [] };
+  const personHours = personHoursReport.totalMs;
   const events: WorkflowEvent[] = wf && wf.events
     ? [...wf.events].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
     : [];
@@ -243,6 +244,82 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
 
   // @ts-ignore — lastAutoTable is injected by autotable
   cursorY = (doc as any).lastAutoTable.finalY + 9;
+
+  // ===== SECTION: Personenstunden — Tag-für-Tag-Aufschlüsselung =====
+  // Only rendered when there are 2+ working days OR per-day staffing varies.
+  // Shows EXACTLY how the total was computed so admins can audit the figure.
+  if (personHoursReport.days.length > 0 && (
+    personHoursReport.days.length >= 2 ||
+    personHoursReport.days.some((d) => d.personCount !== personCount)
+  )) {
+    if (cursorY > pageH - marginBottom - 30) { doc.addPage(); cursorY = marginTop; }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(124, 58, 237);   // violet 7C3AED to match UI accent
+    doc.text("PERSONENSTUNDEN — TAG-FÜR-TAG", marginX, cursorY);
+    doc.setDrawColor(124, 58, 237);
+    doc.setLineWidth(0.4);
+    doc.line(marginX, cursorY + 1.2, pageW - marginX, cursorY + 1.2);
+    cursorY += 4.5;
+    const phRows = personHoursReport.days.map((d) => [
+      d.date,
+      formatDuration(d.workMs),
+      `× ${Math.max(1, d.personCount)}`,
+      formatDuration(d.personHoursMs),
+    ]);
+    // Final "Gesamt" summary row (bold, highlighted)
+    phRows.push(["GESAMT", "", "", formatDuration(personHoursReport.totalMs)]);
+    autoTable(doc, {
+      startY: cursorY,
+      theme: "plain",
+      margin: { left: marginX, right: marginX },
+      head: [["Tag", "Arbeitszeit", "Mitarbeiter", "Personenstunden"]],
+      body: phRows,
+      headStyles: {
+        fillColor: [124, 58, 237],
+        textColor: [255, 255, 255],
+        fontStyle: "bold",
+        fontSize: 9,
+        cellPadding: { top: 2.5, right: 3, bottom: 2.5, left: 3 },
+        halign: "left",
+      },
+      styles: {
+        font: "helvetica",
+        fontSize: 10,
+        cellPadding: { top: 2.5, right: 3, bottom: 2.5, left: 3 },
+        textColor: [0, 0, 0],
+        lineColor: [220, 220, 220],
+        lineWidth: 0.1,
+        overflow: "linebreak",
+        halign: "left",
+        valign: "top",
+      },
+      columnStyles: {
+        0: { cellWidth: 36 },
+        1: { cellWidth: 38, font: "courier" },
+        2: { cellWidth: 30, halign: "center" },
+        3: { cellWidth: "auto", font: "courier", fontStyle: "bold", halign: "right", textColor: [124, 58, 237] },
+      },
+      didParseCell: (data) => {
+        // Bold + accent on the GESAMT row
+        if (data.section === "body" && phRows[data.row.index]?.[0] === "GESAMT") {
+          data.cell.styles.fontStyle = "bold";
+          data.cell.styles.fillColor = [243, 240, 255];
+          data.cell.styles.textColor = [124, 58, 237];
+        }
+      },
+      didDrawCell: (data) => {
+        if (data.section === "body") {
+          const { doc: d, cell } = data;
+          d.setDrawColor(220, 220, 220);
+          d.setLineWidth(0.1);
+          d.line(cell.x, cell.y + cell.height, cell.x + cell.width, cell.y + cell.height);
+        }
+      },
+    });
+    // @ts-ignore
+    cursorY = (doc as any).lastAutoTable.finalY + 9;
+  }
 
   // ===== SECTION: Verlauf & Timeline =====
   const days = wf ? buildDailyBreakdown(wf) : [];

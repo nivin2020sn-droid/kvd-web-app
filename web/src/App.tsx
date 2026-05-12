@@ -15,6 +15,7 @@ import {
   totalWorkMs,
   totalPauseMs,
   personHoursMs,
+  personHoursMsByDay,
   formatDuration,
   formatTime,
   formatDateTime,
@@ -634,13 +635,13 @@ function AdminHome() {
                   <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">Pause-Zeit</div>
                   <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: EVENT_COLOR.pause }}>{formatDuration(totalPauseMs(wf, Date.now()))}</div>
                 </div>
-                {/* 👥 Personenstunden = Arbeitszeit × Anzahl Mitarbeiter (mind. 1).
-                    Reine Anzeige-Größe — kein Einfluss auf die Arbeitszeit-Berechnung. */}
+                {/* 👥 Personenstunden = Σ (Arbeitszeit pro Tag × Mitarbeiter dieses Tages).
+                    Berücksichtigt Mehrtages-Aufgaben mit wechselndem Personal. */}
                 <div className="rounded-lg px-2.5 py-2 border" style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED12" }}>
                   <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">
-                    Personenstunden{(t.person_ids?.length || 0) > 1 && <span className="ml-1 opacity-90" style={{ color: "#A78BFA" }}>×{t.person_ids.length}</span>}
+                    Personenstunden
                   </div>
-                  <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMs(totalMs, t.person_ids?.length || 0))}</div>
+                  <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMsByDay(wf, t.person_ids?.length || 0).totalMs)}</div>
                 </div>
               </div>
 
@@ -1151,11 +1152,44 @@ function DailyBreakdownView({ wf, persons, dark = true, personCount = 0 }: { wf:
         </div>
         <div>
           <div className="text-[9px] font-bold tracking-widest uppercase" style={{ color: muted }}>
-            Personenstunden{personCount > 1 && <span className="ml-1" style={{ color: "#A78BFA" }}>×{personCount}</span>}
+            Personenstunden
           </div>
-          <div className="font-mono tabular-nums text-base font-black" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMs(totalWorkMs(wf), personCount))}</div>
+          <div className="font-mono tabular-nums text-base font-black" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMsByDay(wf, personCount).totalMs)}</div>
         </div>
       </div>
+      {/* Per-day Personenstunden breakdown — shows how the total was computed.
+          Only rendered when ≥ 2 working days OR when day-counts differ. */}
+      {(() => {
+        const ph = personHoursMsByDay(wf, personCount);
+        if (ph.days.length === 0) return null;
+        const showBreakdown = ph.days.length >= 2 || ph.days.some((d) => d.personCount !== personCount);
+        if (!showBreakdown) return null;
+        return (
+          <div className="rounded-xl border px-3 py-2" style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED10" }}>
+            <div className="text-[9px] font-bold tracking-widest uppercase mb-1.5" style={{ color: "#A78BFA" }}>
+              👥 Personenstunden — Tag-für-Tag
+            </div>
+            <div className="space-y-0.5">
+              {ph.days.map((d) => (
+                <div key={d.date} className="flex items-center justify-between text-xs font-mono tabular-nums" style={{ color: dark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.85)" }}>
+                  <span style={{ color: muted }}>{d.date}</span>
+                  <span>
+                    {formatDuration(d.workMs)}
+                    <span style={{ color: muted }}> × </span>
+                    <span style={{ color: "#A78BFA" }}>{Math.max(1, d.personCount)}</span>
+                    <span style={{ color: muted }}> = </span>
+                    <span className="font-black" style={{ color: "#A78BFA" }}>{formatDuration(d.personHoursMs)}</span>
+                  </span>
+                </div>
+              ))}
+              <div className="flex items-center justify-between text-xs font-mono tabular-nums pt-1 mt-1 border-t" style={{ borderColor: "#7C3AED44" }}>
+                <span className="font-black uppercase tracking-wide text-[10px]" style={{ color: "#C4B5FD" }}>Gesamt</span>
+                <span className="font-black text-sm" style={{ color: "#A78BFA" }}>{formatDuration(ph.totalMs)}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1727,9 +1761,9 @@ function AdminArchive() {
                     </div>
                     <div className="rounded-lg px-2.5 py-2 border" style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED12" }}>
                       <div className="text-[10px] font-bold tracking-widest opacity-60 uppercase">
-                        Personenstunden{(t.person_ids?.length || 0) > 1 && <span className="ml-1" style={{ color: "#A78BFA" }}>×{t.person_ids.length}</span>}
+                        Personenstunden
                       </div>
-                      <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMs(totalMs, t.person_ids?.length || 0))}</div>
+                      <div className="font-mono tabular-nums text-base font-black leading-tight" style={{ color: "#A78BFA" }}>{formatDuration(personHoursMsByDay(wf, t.person_ids?.length || 0).totalMs)}</div>
                     </div>
                   </div>
                   <DailyBreakdownView wf={wf} persons={persons} dark={true} personCount={t.person_ids?.length || 0} />
@@ -2521,26 +2555,34 @@ function Tablet() {
                     highlight={isRunning ? "#3B82F6" : wfStatus === "finished" ? "#00E676" : undefined}
                   />
                 </div>
-                {/* 👥 Personenstunden — eigene Zeile damit der HH:MM:SS-Wert
-                    immer vollständig sichtbar bleibt. Reine Anzeige-Größe:
-                    Arbeitszeit × Anzahl Mitarbeiter (mind. 1). */}
-                <div className="rounded-xl border px-3 py-2 mt-1 flex items-center justify-between gap-2"
-                  style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED14" }}>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-base" aria-hidden>👥</span>
-                    <div className="min-w-0">
-                      <div className="text-[10px] font-bold tracking-widest uppercase" style={{ color: dark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.7)" }}>
-                        Personenstunden
+                {/* 👥 Personenstunden — Tag-für-Tag: Σ (Arbeitszeit pro Tag × Mitarbeiter dieses Tages).
+                    Berücksichtigt korrekt mehrtägige Aufgaben mit wechselndem Personal. */}
+                {(() => {
+                  const ph = personHoursMsByDay(wf, t.person_ids?.length || 0);
+                  return (
+                    <div className="rounded-xl border px-3 py-2 mt-1 flex items-center justify-between gap-2"
+                      style={{ borderColor: "#7C3AED55", backgroundColor: "#7C3AED14" }}>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-base" aria-hidden>👥</span>
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-bold tracking-widest uppercase" style={{ color: dark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.7)" }}>
+                            Personenstunden
+                          </div>
+                          <div className="text-[10px]" style={{ color: dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.5)" }}>
+                            {ph.days.length > 1
+                              ? `${ph.days.length} Arbeitstage`
+                              : ph.days.length === 1
+                                ? `${formatDuration(ph.days[0].workMs)} × ${Math.max(1, ph.days[0].personCount)} ${Math.max(1, ph.days[0].personCount) === 1 ? "Person" : "Personen"}`
+                                : "—"}
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-[10px]" style={{ color: dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.5)" }}>
-                        {formatDuration(totalMs)} × {Math.max(1, t.person_ids?.length || 0)} {Math.max(1, t.person_ids?.length || 0) === 1 ? "Person" : "Personen"}
+                      <div className="font-mono tabular-nums text-lg font-black" style={{ color: "#A78BFA" }}>
+                        {formatDuration(ph.totalMs)}
                       </div>
                     </div>
-                  </div>
-                  <div className="font-mono tabular-nums text-lg font-black" style={{ color: "#A78BFA" }}>
-                    {formatDuration(personHoursMs(totalMs, t.person_ids?.length || 0))}
-                  </div>
-                </div>
+                  );
+                })()}
 
                 {/* Aktuelle Notiz (current/last note) */}
                 {wf.last_note && wf.last_event_type && (

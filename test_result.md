@@ -437,6 +437,64 @@ frontend:
           columns. Verified by headless jsPDF render — each line emits its own
           Tj op.
 
+  - task: "Personenstunden field — Per-day calculation (multi-day correct)"
+    implemented: true
+    working: true
+    file: "/app/web/src/lib/workflow.ts, /app/web/src/lib/pdfReport.ts, /app/web/src/lib/printReport.ts, /app/web/src/App.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          ⚠️ FIX of an earlier bug: Personenstunden was naively computed as
+          (totalWorkMs × current_person_ids.length). For multi-day tasks
+          where staffing changed day-by-day, this gave wrong totals.
+
+          CORRECT formula now applied everywhere:
+            Personenstunden = Σ_days (workMs_day × max(1, personCount_day))
+
+          Where personCount_day is taken from the PER-DAY `persons` snapshot
+          stored on each workflow event (captured at click-time). Falls back
+          to the current task.person_ids.length only when an entire day has
+          no event-level snapshot (legacy data).
+
+          New API in lib/workflow.ts:
+            export interface PersonHoursDay {
+              date, workMs, personCount, personHoursMs
+            }
+            export function personHoursMsByDay(wf, fallback, nowMs):
+              { totalMs, days: PersonHoursDay[] }
+
+          Verified with the user's exact example:
+            Day 1: 08:00:00 × 2 = 16:00:00
+            Day 2: 06:00:00 × 3 = 18:00:00
+            Day 3: 04:00:00 × 1 =  4:00:00
+            ────────────────────────────
+            TOTAL              = 38:00:00  ✅
+
+          UI changes:
+            • Admin card / Archive card / Tablet pill — show the per-day-correct
+              total. Sub-label adapts: "N Arbeitstage" for multi-day vs
+              "workMs × N Personen" for single-day.
+            • DailyBreakdownView now renders a violet "Tag-für-Tag" panel
+              with one line per day:
+                 2026-05-01   08:00:00 × 2 = 16:00:00
+                 2026-05-02   06:00:00 × 3 = 18:00:00
+                 2026-05-03   04:00:00 × 1 = 04:00:00
+                 ────────────────────────────────────
+                 GESAMT                     = 38:00:00
+            • Tablet view: same compact pill (shows N Arbeitstage when multi).
+            • PDF report: new dedicated "PERSONENSTUNDEN — TAG-FÜR-TAG"
+              section with 4-column table (Tag / Arbeitszeit / Mitarbeiter /
+              Personenstunden) + violet GESAMT row.
+            • Print HTML: matching standalone table with same columns and
+              violet GESAMT row (#7C3AED accent everywhere).
+
+          Old `personHoursMs(workMs, count)` helper kept for backwards
+          compatibility but not used anywhere in the rendering path.
+
   - task: "Personenstunden field — Arbeitszeit × Anzahl Mitarbeiter"
     implemented: true
     working: true
