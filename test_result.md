@@ -790,3 +790,61 @@ backend:
           Validation: `yarn build` produces a clean production bundle
           (835 KB main chunk, 8 KB CSS) and `npx tsc --noEmit` passes.
 
+
+  - task: "FEATURE — PDF Bericht: management-friendly Layout (multi-day tasks)"
+    implemented: true
+    working: true
+    file: "/app/web/src/lib/pdfReport.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Refactored the multi-day PDF report to be a concise management
+          summary instead of a technical event dump. NO data / NO time-
+          calculation logic changed — pure presentation.
+
+          HEADER (page 1, right):
+            • Replaced single date with "Projektbeginn – Projektende"
+              (first/last day with activity from buildDailyBreakdown).
+            • Added small subtitle "N Arbeitstage" for multi-day tasks.
+
+          AUFGABEN-INFORMATIONEN table:
+            REMOVED: Datum, Haus, Station, Zeit von, Zeit bis,
+                     "Mitarbeiter (Anzahl)" (single-day snapshot).
+            ADDED:   Projektbeginn, Projektende, Bereich (= Haus+Station),
+                     Gesamtmitarbeiter (UNIQUE union across all days).
+            KEPT:    Aufgabentyp, Beschreibung, Status, Gesamt-Arbeitszeit,
+                     Pause-Zeit, Personenstunden (calculations unchanged).
+
+          "Mitarbeiter" field now lists the UNION of every employee who
+          participated on any day (deduplicated, ordered by first-seen day,
+          then by task.person_ids order). Replaces the old "last day only"
+          snapshot.
+
+          PERSONENSTUNDEN — TAG-FÜR-TAG: untouched. Still shows the
+          per-day/per-period breakdown with the violet accent.
+
+          NEW SECTION "TÄGLICHE ZUSAMMENFASSUNG" replaces the old
+          "VERLAUF & TIMELINE" event dump. One row per day, with:
+            • Tag N + Wochentag, DD.MM.YYYY
+            • Arbeitsbeginn (HH:MM)
+            • Arbeitsende   (HH:MM)
+            • Arbeitszeit   (HH:MM:SS)
+            • Pause-Zeit    (HH:MM:SS)
+            • Mitarbeiter (Anzahl – Namen)
+            • Tagesnotiz — the single most important note picked by
+              priority [beenden > feierabend > timeline > others],
+              latest-first within each type. Skips undone/admin events.
+
+          Photos section: unchanged.
+
+          BACKEND: zero changes. workflow.ts: zero changes. The full
+          technical timeline remains available inside the app — only the
+          PDF presentation is condensed.
+
+          Validation: `npx tsc --noEmit` passes, `yarn build` produces a
+          clean production bundle (833 KB main, 7 KB css).
+

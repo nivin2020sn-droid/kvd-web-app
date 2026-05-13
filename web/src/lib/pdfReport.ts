@@ -6,7 +6,7 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { Task, SimpleItem } from "./types";
-import type { TaskWorkflow, WorkflowEvent } from "./workflow";
+import type { TaskWorkflow, WorkflowEvent, EventType } from "./workflow";
 import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMsByPeriod, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
@@ -100,20 +100,58 @@ export async function downloadTaskPdf(task: Task | null | undefined, wf: TaskWor
 }
 
 async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[]) {
-  const personNames = task.person_ids.map((id) => persons.find((p) => p.id === id)?.name || "—").join(", ") || "—";
+  // ---------- 1) Per-day breakdown (computed once, used everywhere) ----------
+  const days = wf ? buildDailyBreakdown(wf) : [];
+  const multiDay = days.length > 1;
+
+  // ---------- 2) Union of ALL employees who participated across the whole task ----------
+  //   Build a stable, deduplicated list ordered by first-seen day, then by
+  //   creation order inside that day. Falls back to task.person_ids if there
+  //   is no workflow yet (freshly created task).
+  const personIdSet = new Set<string>();
+  const orderedPersonIds: string[] = [];
+  const seenAddPerson = (pid: string) => {
+    if (!pid || personIdSet.has(pid)) return;
+    personIdSet.add(pid);
+    orderedPersonIds.push(pid);
+  };
+  for (const d of days) for (const pid of d.persons) seenAddPerson(pid);
+  for (const pid of (task.person_ids || [])) seenAddPerson(pid);
+  const personLookup = (pid: string) => persons.find((p) => p.id === pid)?.name || "—";
+  const allPersonNames = orderedPersonIds.map(personLookup).filter((n) => n && n !== "—");
+  const personNames = allPersonNames.join(", ") || "—";
+  const personCountTotal = orderedPersonIds.length;
+
+  // ---------- 3) Project start/end dates (first / last day with activity) ----------
+  const projektBeginnISO = days[0]?.date || (task.task_date || new Date().toISOString().slice(0, 10));
+  const projektEndeISO   = days[days.length - 1]?.date || projektBeginnISO;
+  const projektBeginn = fmtDate(projektBeginnISO);
+  const projektEnde   = fmtDate(projektEndeISO);
+
+  // ---------- 4) Time totals — UNCHANGED logic ----------
   const workMs = wf ? totalWorkMs(wf) : 0;
   const pauseMs = wf ? totalPauseMs(wf) : 0;
   // Personenstunden = Σ (Arbeitszeit pro Tag × Anzahl Mitarbeiter dieses Tages).
   // Multi-day-correct: respects per-day staffing snapshots stored in events.
-  const personCount = Array.isArray(task.person_ids) ? task.person_ids.length : 0;
-  const personHoursReport = wf ? personHoursMsByPeriod(wf, personCount) : { totalMs: 0, periods: [] };
+  // We pass the UNION-count so single-day legacy behaviour stays identical for
+  // tasks that never had mitarbeiter_hinzu (the personHoursMsByPeriod logic
+  // prefers per-event snapshots over this fallback anyway).
+  const personHoursReport = wf
+    ? personHoursMsByPeriod(wf, personCountTotal)
+    : { totalMs: 0, periods: [] };
   const personHours = personHoursReport.totalMs;
   const events: WorkflowEvent[] = wf && wf.events
     ? [...wf.events].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
     : [];
   const statusLabel = wf ? STATUS_LABEL_DE[wf.status] : "—";
-  const datum = fmtDate(task.task_date || new Date().toISOString());
-  const datumISO = (task.task_date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+
+  // ---------- 5) Bereich = Haus + Station combined into one field ----------
+  const haus = (task.haus || "").trim();
+  const station = (task.station || "").trim();
+  const bereich = haus && station ? `${haus}${station}` : (haus || station || "—");
+
+  // Used for filename + footer
+  const datumISO = projektBeginnISO.slice(0, 10);
 
   const doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
   // ----- Global text rendering defaults — defensive resets so user-entered
@@ -137,14 +175,22 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   const titleLines = doc.splitTextToSize(task.task_type || "Aufgabe", pageW - marginX * 2 - 60);
   doc.text(titleLines, marginX, marginTop + 6);
 
-  // Right side: date & status
+  // Right side: project range (Beginn → Ende) instead of single date.
+  // For single-day tasks both values are identical, so we just show one line.
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
-  doc.text(datum, pageW - marginX, marginTop + 4, { align: "right" });
+  if (projektBeginnISO === projektEndeISO) {
+    doc.text(projektBeginn, pageW - marginX, marginTop + 4, { align: "right" });
+  } else {
+    doc.text(`${projektBeginn} – ${projektEnde}`, pageW - marginX, marginTop + 4, { align: "right" });
+  }
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(80, 80, 80);
-  doc.text(`${task.time_from} – ${task.time_to}`, pageW - marginX, marginTop + 9, { align: "right" });
+  // Second small line: number of work days (only when multi-day).
+  if (days.length > 1) {
+    doc.text(`${days.length} Arbeitstage`, pageW - marginX, marginTop + 9, { align: "right" });
+  }
 
   // Status pill (right)
   doc.setFont("helvetica", "bold");
@@ -184,23 +230,28 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   doc.line(marginX, cursorY + 1.2, pageW - marginX, cursorY + 1.2);
   cursorY += 4;
 
+  // ----- Compact, management-friendly summary table -----
+  // Removed: single "Datum", "Haus" / "Station" (now Bereich), "Zeit von" / "Zeit bis"
+  //         (these are per-day values and shown in the daily summary table below).
+  // Added:   "Projektbeginn" / "Projektende" (first/last work day), "Bereich" (Haus+Station)
   const infoRows: Array<[string, string]> = [
-    ["Datum", datum],
-    ["Aufgabentyp", task.task_type || "—"],
-    ["Haus", task.haus || "—"],
-    ["Station", task.station || "—"],
-    ["Mitarbeiter", personNames],
+    ["Projektbeginn", projektBeginn],
+    ["Projektende",   projektEnde],
+    ["Aufgabentyp",   task.task_type || "—"],
+    ["Bereich",       bereich],
+    // All-time roster: deduplicated union of every Mitarbeiter who ever
+    // participated on any day. Order = first-seen day.
+    ["Mitarbeiter",   personNames],
     // Multi-line descriptions: preserve user newlines via normalizeMultiline.
     // jspdf-autotable with overflow:'linebreak' honours "\n" as a hard break.
-    ["Beschreibung", normalizeMultiline(task.description) || "—"],
-    ["Zeit von", task.time_from || "—"],
-    ["Zeit bis", task.time_to || "—"],
-    ["Status", statusLabel],
-    ["Mitarbeiter (Anzahl)", String(personCount)],
+    ["Beschreibung",  normalizeMultiline(task.description) || "—"],
+    ["Status",        statusLabel],
+    // UNIQUE count across all days (NOT just last day's snapshot).
+    ["Gesamtmitarbeiter", String(personCountTotal)],
     ["Gesamt-Arbeitszeit", formatDuration(workMs)],
-    ["Pause-Zeit", formatDuration(pauseMs)],
+    ["Pause-Zeit",         formatDuration(pauseMs)],
     // 👥 Personenstunden = Arbeitszeit × Mitarbeiter — gleicher HH:MM:SS-Format.
-    ["Personenstunden", formatDuration(personHours)],
+    ["Personenstunden",    formatDuration(personHours)],
   ];
 
   autoTable(doc, {
@@ -249,7 +300,7 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   // Renders sub-periods so each "mitarbeiter_hinzu" event splits a day.
   if (personHoursReport.periods.length > 0 && (
     personHoursReport.periods.length >= 2 ||
-    personHoursReport.periods.some((p) => p.personCount !== personCount)
+    personHoursReport.periods.some((p) => p.personCount !== personCountTotal)
   )) {
     if (cursorY > pageH - marginBottom - 30) { doc.addPage(); cursorY = marginTop; }
     doc.setFont("helvetica", "bold");
@@ -319,10 +370,11 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
     cursorY = (doc as any).lastAutoTable.finalY + 9;
   }
 
-  // ===== SECTION: Verlauf & Timeline =====
-  const days = wf ? buildDailyBreakdown(wf) : [];
-  const multiDay = days.length > 1;
-  // Ensure we have room for heading + table header
+  // ===== SECTION: TÄGLICHE ZUSAMMENFASSUNG =====
+  // Replaces the old "Verlauf & Timeline" which dumped every technical event.
+  // Management-friendly: ONE summary card per day. Full technical history
+  // remains available inside the app (we don't delete any data).
+  // Ensure we have room for heading + first day card
   if (cursorY > pageH - marginBottom - 40) {
     doc.addPage();
     cursorY = marginTop;
@@ -330,7 +382,7 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9.5);
   doc.setTextColor(0, 0, 0);
-  doc.text("VERLAUF & TIMELINE", marginX, cursorY);
+  doc.text("TÄGLICHE ZUSAMMENFASSUNG", marginX, cursorY);
   doc.setDrawColor(120, 120, 120);
   doc.setLineWidth(0.2);
   doc.line(marginX, cursorY + 1.2, pageW - marginX, cursorY + 1.2);
@@ -340,34 +392,97 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
     doc.setFont("helvetica", "italic");
     doc.setFontSize(9);
     doc.setTextColor(90, 90, 90);
-    doc.text(`Diese Aufgabe erstreckt sich über ${days.length} Arbeitstage. Einträge sind nach Tagen gruppiert.`, marginX, cursorY + 3);
+    doc.text(
+      `Diese Aufgabe erstreckt sich über ${days.length} Arbeitstage. Pro Tag wird der wichtigste Eintrag angezeigt.`,
+      marginX, cursorY + 3,
+    );
     cursorY += 7;
   }
 
-  const renderEventTable = (evs: WorkflowEvent[], startY: number): number => {
-    const body = evs.map((ev) => {
-      const typeLabel = EVENT_LABEL[ev.type] || ev.type;
-      const undone = ev.undone ? " (zurückgenommen)" : "";
-      const author = ev.author_name || ev.created_by;
-      const creator = author ? `\n(${author})` : "";
-      const typCell = `${typeLabel}${undone}${creator}`;
-      const zeitCell = `${evTime(ev)}\n${evDate(ev)}`;
-      // Normalize user-entered text so every "\n" inside the note is a real
-      // line break the PDF engine will honour (and not a CRLF that some
-      // browsers introduce).
-      let notizCell = normalizeMultiline(formatEventNote(ev)) || "—";
-      if (ev.corrections && ev.corrections.length) {
-        const corrStr = ev.corrections.map((co) => `• ${EVENT_LABEL[co.target_type]}: ${fmtTime24(co.old_ts)} → ${co.new_display_time ? co.new_display_time + ':00' : fmtTime24(co.new_ts)}`).join("\n");
-        notizCell = notizCell === "—" ? corrStr : `${notizCell}\n${corrStr}`;
+  // --- helpers used only by this section ---
+  const fmtTimeHM = (iso: string | null | undefined): string => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleTimeString("de-DE", {
+        hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Berlin",
+      });
+    } catch { return "—"; }
+  };
+  // Pick the single "most important" note of the day. Priority:
+  //   1. Latest non-empty `beenden` note  (project closure summary)
+  //   2. Latest non-empty `feierabend` note (end-of-day status)
+  //   3. Latest non-empty `timeline` entry (free-form daily log)
+  //   4. Any other non-empty user note (latest first)
+  // Admin / undone events are skipped — they are technical bookkeeping.
+  const pickDayNote = (d: { events: WorkflowEvent[] }): string | null => {
+    const noteOf = (ev: WorkflowEvent) =>
+      normalizeMultiline(formatEventNote(ev)).trim();
+    const isAdmin = (ev: WorkflowEvent) =>
+      ev.type === "admin_zeitkorrektur" || ev.type === "admin_beenden_rueckgaengig";
+    const userEvents = d.events.filter((ev) => !ev.undone && !isAdmin(ev));
+    const inOrder = [...userEvents].sort(
+      (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
+    );
+    const priority: EventType[] = ["beenden", "feierabend", "timeline"];
+    for (const t of priority) {
+      const matches = inOrder.filter((e) => e.type === t);
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const n = noteOf(matches[i]);
+        if (n) return n;
       }
-      return { typ: typCell, zeit: zeitCell, notiz: notizCell, _undone: !!ev.undone };
+    }
+    // Fallback: latest non-empty note from any remaining user event.
+    for (let i = inOrder.length - 1; i >= 0; i--) {
+      const n = noteOf(inOrder[i]);
+      if (n) return n;
+    }
+    return null;
+  };
+
+  if (days.length === 0) {
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(10);
+    doc.setTextColor(110, 110, 110);
+    doc.text("Keine Arbeitstage vorhanden.", marginX, cursorY + 4);
+    cursorY += 8;
+  } else {
+    // Build daily-summary rows for autoTable. We use a one-table approach so
+    // page-breaks are handled automatically across many days.
+    const dayRows = days.map((d, idx) => {
+      const dayLabel = new Date(d.date + "T12:00:00").toLocaleDateString("de-DE", {
+        weekday: "short", day: "2-digit", month: "2-digit", year: "numeric",
+      });
+      const dayPersonsList = d.persons.length
+        ? d.persons.map((id) => personLookup(id)).filter((n) => n && n !== "—")
+        : [];
+      const dayPersonsStr = dayPersonsList.length
+        ? `${dayPersonsList.length} – ${dayPersonsList.join(", ")}`
+        : "—";
+      const tagNote = pickDayNote(d);
+      // Compose the right-hand summary cell as a single multi-line string.
+      // Labels are bold-ish via a leading icon-free label. jsPDF doesn't do
+      // mixed-weight inside a single cell easily; this is the cleanest
+      // management-report-style layout.
+      const lines = [
+        `Arbeitsbeginn: ${fmtTimeHM(d.started_at)}`,
+        `Arbeitsende:   ${fmtTimeHM(d.finished_at || d.feierabend_at)}`,
+        `Arbeitszeit:   ${formatDuration(d.workMs)}`,
+        `Pause-Zeit:    ${formatDuration(d.pauseMs)}`,
+        `Mitarbeiter:   ${dayPersonsStr}`,
+      ];
+      if (tagNote) lines.push(`Tagesnotiz:    ${tagNote}`);
+      return {
+        tag: `Tag ${idx + 1}\n${dayLabel}`,
+        summary: lines.join("\n"),
+      };
     });
+
     autoTable(doc, {
-      startY,
+      startY: cursorY,
       theme: "plain",
       margin: { left: marginX, right: marginX, bottom: marginBottom },
-      head: [["Typ", "Zeit (24h)", "Notiz"]],
-      body: body.map((r) => [r.typ, r.zeit, r.notiz]),
+      head: [["Tag", "Zusammenfassung"]],
+      body: dayRows.map((r) => [r.tag, r.summary]),
       headStyles: {
         fillColor: [0, 0, 0],
         textColor: [255, 255, 255],
@@ -383,23 +498,25 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
         lineColor: [220, 220, 220],
         lineWidth: 0.1,
         textColor: [0, 0, 0],
-        // CRITICAL: linebreak overflow preserves user's "\n" hard breaks
-        // AND wraps long words on cell width. halign:left avoids justified
-        // spacing artefacts that look like wide letter spacing.
         overflow: "linebreak",
         halign: "left",
         valign: "top",
       },
       columnStyles: {
-        0: { cellWidth: 38, overflow: "linebreak", halign: "left", valign: "top" },
-        1: { cellWidth: 32, font: "courier", fontSize: 10, halign: "left", valign: "top" },
-        2: { cellWidth: "auto", overflow: "linebreak", halign: "left", valign: "top" },
-      },
-      didParseCell: (data) => {
-        if (data.section === "body" && body[data.row.index]?._undone) {
-          data.cell.styles.textColor = [120, 120, 120];
-          data.cell.styles.fontStyle = "italic";
-        }
+        0: {
+          cellWidth: 36,
+          fontStyle: "bold",
+          fillColor: [245, 245, 245],
+          valign: "middle",
+          halign: "left",
+        },
+        1: {
+          cellWidth: "auto",
+          font: "courier",
+          fontSize: 10,
+          overflow: "linebreak",
+          valign: "top",
+        },
       },
       didDrawCell: (data) => {
         if (data.section === "body") {
@@ -410,69 +527,7 @@ async function renderPdf(task: Task, wf: TaskWorkflow | null, persons: SimpleIte
         }
       },
     });
-    return (doc as any).lastAutoTable.finalY;
-  };
-
-  if (events.length === 0) {
-    doc.setFont("helvetica", "italic");
-    doc.setFontSize(10);
-    doc.setTextColor(110, 110, 110);
-    doc.text("Keine Ereignisse vorhanden.", marginX, cursorY + 4);
-  } else if (!multiDay) {
-    cursorY = renderEventTable(events, cursorY);
-  } else {
-    // Render a boxed section per day
-    for (let i = 0; i < days.length; i++) {
-      const d = days[i];
-      // Need space for day header (approx 14mm)
-      if (cursorY > pageH - marginBottom - 30) { doc.addPage(); cursorY = marginTop; }
-
-      // Day header box
-      const boxTop = cursorY;
-      const dayLabel = new Date(d.date + "T12:00:00").toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
-      const dayPersons = d.persons.length ? d.persons.map((id) => persons.find((p) => p.id === id)?.name || id.slice(0, 6)).join(", ") : "—";
-      doc.setDrawColor(0, 0, 0);
-      doc.setLineWidth(0.4);
-      doc.setFillColor(245, 245, 245);
-      doc.rect(marginX, boxTop, pageW - marginX * 2, 14, "FD");
-      // Tag N + date
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(8);
-      doc.setTextColor(100, 100, 100);
-      doc.text(`TAG ${i + 1}`, marginX + 3, boxTop + 4.5);
-      doc.setFontSize(12);
-      doc.setTextColor(0, 0, 0);
-      doc.text(dayLabel, marginX + 3, boxTop + 9.5);
-      // KPIs on right
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7.5);
-      doc.setTextColor(90, 90, 90);
-      doc.text("Arbeitszeit", pageW - marginX - 40, boxTop + 4.5);
-      doc.text("Pause-Zeit", pageW - marginX - 18, boxTop + 4.5);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.setTextColor(0, 0, 0);
-      doc.text(formatDuration(d.workMs), pageW - marginX - 40, boxTop + 9.5);
-      doc.text(formatDuration(d.pauseMs), pageW - marginX - 18, boxTop + 9.5);
-      // Mitarbeiter line
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(40, 40, 40);
-      const persLines = doc.splitTextToSize(`Mitarbeiter: ${dayPersons}`, pageW - marginX * 2 - 6);
-      doc.text(persLines, marginX + 3, boxTop + 13);
-      cursorY = boxTop + 14 + Math.max(0, (persLines.length - 1) * 3.5) + 2;
-
-      // Events table
-      if (d.events.length === 0) {
-        doc.setFont("helvetica", "italic");
-        doc.setFontSize(9.5);
-        doc.setTextColor(110, 110, 110);
-        doc.text("Keine Ereignisse an diesem Tag.", marginX + 3, cursorY + 4);
-        cursorY += 8;
-      } else {
-        cursorY = renderEventTable(d.events, cursorY) + 6;
-      }
-    }
+    cursorY = (doc as any).lastAutoTable.finalY + 6;
   }
 
   // ===== SECTION: FOTOS =====
