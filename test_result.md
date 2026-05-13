@@ -848,3 +848,47 @@ backend:
           Validation: `npx tsc --noEmit` passes, `yarn build` produces a
           clean production bundle (833 KB main, 7 KB css).
 
+
+  - task: "FEATURE — Print/HTML Report: same management-friendly redesign"
+    implemented: true
+    working: true
+    file: "/app/web/src/lib/printReport.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Mirrored the new PDF report layout in the HTML/print report
+          (window.print() pipeline). Same fields, same behaviour, fully
+          consistent between PDF and Print outputs.
+
+          Changes (all presentational — no DB / no time-calc logic):
+            • Header right block: "Projektbeginn – Projektende" (or single
+              date for single-day tasks) + "N Arbeitstage" subline.
+              Removed the "Zeit von – Zeit bis" subline.
+            • Aufgaben-Informationen table:
+                REMOVED: Datum, Haus, Station, Zeit von, Zeit bis,
+                         Mitarbeiter (Anzahl)
+                ADDED:   Projektbeginn, Projektende, Bereich (= Haus+Station),
+                         Gesamtmitarbeiter (deduplicated all-day count)
+                KEPT:    Aufgabentyp, Beschreibung, Status,
+                         Gesamt-Arbeitszeit, Pause-Zeit, Personenstunden
+            • Mitarbeiter field now lists the UNION of every employee who
+              participated on any day (deduplicated, ordered by first-seen).
+            • Personenstunden-Tag-für-Tag table: untouched.
+            • NEW section "Tägliche Zusammenfassung" replaces the old
+              "Verlauf & Timeline" event dump:
+                – One <table class="daily-summary"> row per day.
+                – Per-day fields: Arbeitsbeginn, Arbeitsende, Arbeitszeit,
+                  Pause-Zeit, Mitarbeiter (count + names), Tagesnotiz
+                  (single most-important note via same picker as PDF).
+                – Print-friendly CSS with page-break-inside: avoid and
+                  display: table-header-group for repeating headers.
+            • Photos section: untouched.
+            • Removed the now-unused buildEventRowHtml/eventRows code.
+
+          Validation: `npx tsc --noEmit` passes,
+          `yarn build` produces a clean production bundle (835 KB main).
+

@@ -5,7 +5,7 @@
 // - Events are chronologically sorted and include Timeline entries.
 
 import type { Task, SimpleItem } from "./types";
-import type { TaskWorkflow, WorkflowEvent } from "./workflow";
+import type { TaskWorkflow, WorkflowEvent, EventType } from "./workflow";
 import { EVENT_LABEL, STATUS_LABEL_DE, totalWorkMs, totalPauseMs, personHoursMsByPeriod, formatDuration, buildDailyBreakdown, fetchAllWorkflows, getWorkflow, formatEventNote } from "./workflow";
 import { loadServerConfig } from "./serverConfig";
 
@@ -83,80 +83,126 @@ export async function printTaskReport(task: Task | null | undefined, wf: TaskWor
 
 function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[]) {
   const pn = (id: string) => persons.find((p) => p.id === id)?.name || "—";
-  const personNames = task.person_ids.map(pn).join(", ") || "—";
+
+  // ---------- 1) Per-day breakdown (computed once, used everywhere) ----------
+  const days = wf ? buildDailyBreakdown(wf) : [];
+  const multiDay = days.length > 1;
+
+  // ---------- 2) Union of ALL employees who participated across the whole task ----------
+  //   Deduplicated, ordered by first-seen day; falls back to task.person_ids
+  //   for freshly-created tasks without a workflow yet.
+  const personIdSet = new Set<string>();
+  const orderedPersonIds: string[] = [];
+  const seenAddPerson = (pid: string) => {
+    if (!pid || personIdSet.has(pid)) return;
+    personIdSet.add(pid);
+    orderedPersonIds.push(pid);
+  };
+  for (const d of days) for (const pid of d.persons) seenAddPerson(pid);
+  for (const pid of (task.person_ids || [])) seenAddPerson(pid);
+  const personNames = orderedPersonIds.map(pn).filter((n) => n && n !== "—").join(", ") || "—";
+  const personCountTotal = orderedPersonIds.length;
+
+  // ---------- 3) Project start/end dates (first / last day with activity) ----------
+  const projektBeginnISO = days[0]?.date || (task.task_date || new Date().toISOString().slice(0, 10));
+  const projektEndeISO   = days[days.length - 1]?.date || projektBeginnISO;
+  const projektBeginn = fmtDate(projektBeginnISO);
+  const projektEnde   = fmtDate(projektEndeISO);
+
+  // ---------- 4) Time totals — UNCHANGED logic ----------
   const workMs = wf ? totalWorkMs(wf) : 0;
   const pauseMs = wf ? totalPauseMs(wf) : 0;
   // 👥 Personenstunden: Σ (Arbeitszeit pro Tag × Mitarbeiter dieses Tages).
   // Korrekt für Mehrtages-Aufgaben mit wechselndem Personal.
-  const personCount = Array.isArray(task.person_ids) ? task.person_ids.length : 0;
-  const personHoursReport = wf ? personHoursMsByPeriod(wf, personCount) : { totalMs: 0, periods: [] };
+  const personHoursReport = wf
+    ? personHoursMsByPeriod(wf, personCountTotal)
+    : { totalMs: 0, periods: [] };
   const personHours = personHoursReport.totalMs;
   const events = buildEventRows(wf);
-  const days = wf ? buildDailyBreakdown(wf) : [];
-  const multiDay = days.length > 1;
   const title = `${task.task_type}`;
-  const datumStr = fmtDate(task.task_date || new Date().toISOString());
   const statusLabel = wf ? STATUS_LABEL_DE[wf.status] : "—";
+
+  // ---------- 5) Bereich = Haus + Station combined into one field ----------
+  const haus = (task.haus || "").trim();
+  const station = (task.station || "").trim();
+  const bereich = haus && station ? `${haus}${station}` : (haus || station || "—");
+
+  // ---------- 6) Header date display (range for multi-day, single date otherwise) ----------
+  const headerDateDisplay = projektBeginnISO === projektEndeISO
+    ? projektBeginn
+    : `${projektBeginn} – ${projektEnde}`;
+
+  // ---------- 7) "Most important note of the day" picker (same logic as PDF) ----------
+  const pickDayNote = (d: { events: WorkflowEvent[] }): string | null => {
+    const noteOf = (ev: WorkflowEvent) => (formatEventNote(ev) || "").trim();
+    const isAdmin = (ev: WorkflowEvent) =>
+      ev.type === "admin_zeitkorrektur" || ev.type === "admin_beenden_rueckgaengig";
+    const userEvents = d.events.filter((ev) => !ev.undone && !isAdmin(ev));
+    const inOrder = [...userEvents].sort(
+      (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
+    );
+    const priority: EventType[] = ["beenden", "feierabend", "timeline"];
+    for (const t of priority) {
+      const matches = inOrder.filter((e) => e.type === t);
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const n = noteOf(matches[i]);
+        if (n) return n;
+      }
+    }
+    for (let i = inOrder.length - 1; i >= 0; i--) {
+      const n = noteOf(inOrder[i]);
+      if (n) return n;
+    }
+    return null;
+  };
+  // Local helper: short HH:MM formatter for daily-summary start/end times.
+  const fmtTimeHM = (iso: string | null | undefined): string => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleTimeString("de-DE", {
+        hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Berlin",
+      });
+    } catch { return "—"; }
+  };
 
   const infoRow = (label: string, value: string) =>
     `<tr><th>${esc(label)}</th><td>${value}</td></tr>`;
 
-  const buildEventRowHtml = (ev: WorkflowEvent) => {
-    const typeLabel = EVENT_LABEL[ev.type] || ev.type;
-    const undone = ev.undone ? " (zurückgenommen)" : "";
-    const corr = ev.corrections && ev.corrections.length
-      ? `<div class="corrections">${ev.corrections.map((co) => `&bull; ${esc(EVENT_LABEL[co.target_type])}: ${esc(fmtTime24(co.old_ts))} &rarr; ${esc(co.new_display_time ? co.new_display_time + ':00' : fmtTime24(co.new_ts))}`).join("<br>")}</div>`
-      : "";
-    const noteText = (() => {
-      const display = formatEventNote(ev);
-      return display ? esc(display) : `<span class="muted">—</span>`;
-    })();
-    const createdBy = (ev.author_name || ev.created_by) ? ` <span class="muted">(${esc(ev.author_name || ev.created_by || "")})</span>` : "";
-    const cls = ev.undone ? "undone" : "";
+  // NOTE: The detailed per-event row builder + `eventRows` from the previous
+  // version have been removed. The PDF/HTML reports now show a per-day
+  // summary instead of a technical event dump. The full timeline remains
+  // available inside the app — only the report presentation is condensed.
+
+  // Build per-day SUMMARY rows (management-friendly). Replaces the old
+  // technical day-by-day event dump. One row per day with the key facts.
+  const dailySummaryRowsHtml = days.map((d, idx) => {
+    const dayPersonsList = d.persons.length
+      ? d.persons.map(pn).filter((n) => n && n !== "—")
+      : [];
+    const dayPersonsCell = dayPersonsList.length
+      ? `${dayPersonsList.length} – ${esc(dayPersonsList.join(", "))}`
+      : '<span class="muted">—</span>';
+    const tagNote = pickDayNote(d);
+    const dayLabel = new Date(d.date + "T12:00:00").toLocaleDateString("de-DE", {
+      weekday: "short", day: "2-digit", month: "2-digit", year: "numeric",
+    });
+    const arbeitsende = fmtTimeHM(d.finished_at || d.feierabend_at);
+    const arbeitsbeginn = fmtTimeHM(d.started_at);
     return `
-      <tr class="${cls}">
-        <td class="col-typ"><strong>${esc(typeLabel)}</strong>${esc(undone)}${createdBy}</td>
-        <td class="col-zeit">${esc(evTime(ev))}<div class="muted small">${esc(evDate(ev))}</div></td>
-        <td class="col-notiz">${noteText}${corr}</td>
+      <tr>
+        <td class="day-tag-cell">
+          <strong>Tag ${idx + 1}</strong>
+          <div class="muted small">${esc(dayLabel)}</div>
+        </td>
+        <td class="day-summary-cell">
+          <div class="ds-row"><span class="ds-label">Arbeitsbeginn:</span> <span class="ds-val">${esc(arbeitsbeginn)}</span></div>
+          <div class="ds-row"><span class="ds-label">Arbeitsende:</span>   <span class="ds-val">${esc(arbeitsende)}</span></div>
+          <div class="ds-row"><span class="ds-label">Arbeitszeit:</span>   <span class="ds-val mono"><strong>${esc(formatDuration(d.workMs))}</strong></span></div>
+          <div class="ds-row"><span class="ds-label">Pause-Zeit:</span>    <span class="ds-val mono">${esc(formatDuration(d.pauseMs))}</span></div>
+          <div class="ds-row"><span class="ds-label">Mitarbeiter:</span>   <span class="ds-val">${dayPersonsCell}</span></div>
+          ${tagNote ? `<div class="ds-row ds-note"><span class="ds-label">Tagesnotiz:</span> <span class="ds-val">${esc(tagNote)}</span></div>` : ''}
+        </td>
       </tr>`;
-  };
-
-  const eventRows = events.map(buildEventRowHtml).join("");
-
-  // Build per-day sections HTML (only when multi-day)
-  const daysSectionsHtml = !multiDay ? "" : days.map((d, idx) => {
-    const dayPersons = d.persons.length > 0 ? d.persons.map(pn).join(", ") : "—";
-    const dayDate = fmtDate(d.date + "T12:00:00");
-    const rows = d.events.map(buildEventRowHtml).join("");
-    return `
-    <div class="day-section">
-      <div class="day-header">
-        <div>
-          <div class="day-tag">Tag ${idx + 1}</div>
-          <div class="day-date">${esc(dayDate)}</div>
-        </div>
-        <div class="day-kpis">
-          <div><span class="muted small">Arbeitszeit</span><div class="kpi-val">${esc(formatDuration(d.workMs))}</div></div>
-          <div><span class="muted small">Pause-Zeit</span><div class="kpi-val">${esc(formatDuration(d.pauseMs))}</div></div>
-        </div>
-      </div>
-      <table class="info compact">
-        <tbody>
-          <tr><th>Mitarbeiter</th><td>${esc(dayPersons)}</td></tr>
-        </tbody>
-      </table>
-      ${d.events.length === 0 ? '<p class="muted">Keine Ereignisse an diesem Tag.</p>' : `
-      <table class="events">
-        <thead>
-          <tr>
-            <th class="col-typ">Typ</th>
-            <th class="col-zeit">Zeit</th>
-            <th class="col-notiz">Notiz</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>`}
-    </div>`;
   }).join("");
 
   const now = new Date();
@@ -166,7 +212,7 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<title>Aufgabe ${esc(title)} · ${esc(datumStr)}</title>
+<title>Aufgabe ${esc(title)} · ${esc(headerDateDisplay)}</title>
 <style>
   /* ---- reset ---- */
   * { box-sizing: border-box; }
@@ -340,6 +386,65 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     white-space: pre-wrap;
   }
 
+  /* ---- Daily Summary (replaces detailed Verlauf-Timeline) ---- */
+  table.daily-summary {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 4px;
+    table-layout: fixed;
+  }
+  table.daily-summary thead th {
+    background: #000;
+    color: #fff;
+    text-align: left;
+    font-size: 9.5pt;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    border: 1px solid #000;
+  }
+  table.daily-summary tbody td {
+    border: 1px solid #ddd;
+    padding: 8px 10px;
+    vertical-align: top;
+    font-size: 10.5pt;
+  }
+  table.daily-summary .col-day { width: 32mm; }
+  table.daily-summary .day-tag-cell {
+    background: #f5f5f5;
+    text-align: left;
+    font-size: 11pt;
+    vertical-align: middle;
+  }
+  table.daily-summary .day-tag-cell strong { font-size: 11.5pt; }
+  table.daily-summary .day-tag-cell .small { font-size: 9pt; margin-top: 2px; }
+  table.daily-summary .day-summary-cell .ds-row {
+    display: flex;
+    gap: 6px;
+    line-height: 1.55;
+    padding: 1px 0;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  table.daily-summary .day-summary-cell .ds-label {
+    display: inline-block;
+    min-width: 32mm;
+    color: #333;
+    font-weight: 600;
+  }
+  table.daily-summary .day-summary-cell .ds-val { flex: 1; }
+  table.daily-summary .day-summary-cell .ds-val.mono {
+    font-family: "Courier New", "Liberation Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  table.daily-summary .day-summary-cell .ds-note {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px dashed #ddd;
+  }
+  table.daily-summary tr { page-break-inside: avoid; }
+
   /* ---- Summary row (work/pause totals) ---- */
   .totals {
     display: flex;
@@ -500,6 +605,7 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     a, a:visited { color: #000; text-decoration: none; }
     table.events thead { display: table-header-group; } /* repeat header on page break */
     table.info  thead { display: table-header-group; }
+    table.daily-summary thead { display: table-header-group; }
     tr, img { page-break-inside: avoid; }
     h1, h2, h3 { page-break-after: avoid; }
   }
@@ -519,8 +625,8 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
       <div class="worker">${esc(personNames)}</div>
     </div>
     <div class="meta">
-      <div class="date-big">${esc(datumStr)}</div>
-      <div class="small muted">${esc(task.time_from)} &ndash; ${esc(task.time_to)}</div>
+      <div class="date-big">${esc(headerDateDisplay)}</div>
+      ${multiDay ? `<div class="small muted">${days.length} Arbeitstage</div>` : ''}
       <div class="status">${esc(statusLabel)}</div>
     </div>
   </div>
@@ -528,18 +634,16 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
   <h2>Aufgaben-Informationen</h2>
   <table class="info">
     <tbody>
-      ${infoRow("Datum", esc(datumStr))}
-      ${infoRow("Aufgabentyp", esc(task.task_type))}
-      ${infoRow("Haus", esc(task.haus))}
-      ${infoRow("Station", esc(task.station))}
-      ${infoRow("Mitarbeiter", esc(personNames))}
-      ${infoRow("Mitarbeiter (Anzahl)", `<strong>${personCount}</strong>`)}
-      ${infoRow("Beschreibung", task.description ? esc(task.description) : '<span class="muted">—</span>')}
-      ${infoRow("Zeit von", esc(task.time_from))}
-      ${infoRow("Zeit bis", esc(task.time_to))}
-      ${infoRow("Status", esc(statusLabel))}
+      ${infoRow("Projektbeginn", esc(projektBeginn))}
+      ${infoRow("Projektende",   esc(projektEnde))}
+      ${infoRow("Aufgabentyp",   esc(task.task_type))}
+      ${infoRow("Bereich",       esc(bereich))}
+      ${infoRow("Mitarbeiter",   esc(personNames))}
+      ${infoRow("Beschreibung",  task.description ? esc(task.description) : '<span class="muted">—</span>')}
+      ${infoRow("Status",        esc(statusLabel))}
+      ${infoRow("Gesamtmitarbeiter", `<strong>${personCountTotal}</strong>`)}
       ${infoRow("Gesamt-Arbeitszeit", `<strong>${esc(formatDuration(workMs))}</strong>`)}
-      ${infoRow("Pause-Zeit", `<strong>${esc(formatDuration(pauseMs))}</strong>`)}
+      ${infoRow("Pause-Zeit",         `<strong>${esc(formatDuration(pauseMs))}</strong>`)}
       ${infoRow(
         "👥 Personenstunden",
         `<strong style="color:#7C3AED;">${esc(formatDuration(personHours))}</strong>` +
@@ -552,7 +656,7 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
     </tbody>
   </table>
 
-  ${(personHoursReport.periods.length >= 2 || personHoursReport.periods.some((p) => p.personCount !== personCount)) ? `
+  ${(personHoursReport.periods.length >= 2 || personHoursReport.periods.some((p) => p.personCount !== personCountTotal)) ? `
   <h2>👥 Personenstunden — Tag-für-Tag</h2>
   <table class="ph-breakdown" style="width:100%;border-collapse:collapse;margin-top:6px;">
     <thead>
@@ -579,24 +683,19 @@ function renderPrint(task: Task, wf: TaskWorkflow | null, persons: SimpleItem[])
   </table>
   ` : ''}
 
-  <h2>Verlauf &amp; Timeline</h2>
-  ${multiDay ? `
-    <p class="muted small" style="margin:0 0 8px 0">Diese Aufgabe erstreckt sich über <strong>${days.length} Arbeitstage</strong>. Die Einträge sind nach Tagen gruppiert.</p>
-    ${daysSectionsHtml}
-  ` : (events.length === 0 ? '<p class="muted">Keine Ereignisse vorhanden.</p>' : `
-  <table class="events">
-    <thead>
-      <tr>
-        <th class="col-typ">Typ</th>
-        <th class="col-zeit">Zeit</th>
-        <th class="col-notiz">Notiz</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${eventRows}
-    </tbody>
-  </table>
-  `)}
+  <h2>Tägliche Zusammenfassung</h2>
+  ${days.length === 0 ? '<p class="muted">Keine Arbeitstage vorhanden.</p>' : `
+    ${multiDay ? `<p class="muted small" style="margin:0 0 8px 0">Diese Aufgabe erstreckt sich über <strong>${days.length} Arbeitstage</strong>. Pro Tag wird der wichtigste Eintrag angezeigt.</p>` : ''}
+    <table class="daily-summary">
+      <thead>
+        <tr>
+          <th class="col-day">Tag</th>
+          <th class="col-summary">Zusammenfassung</th>
+        </tr>
+      </thead>
+      <tbody>${dailySummaryRowsHtml}</tbody>
+    </table>
+  `}
 
   ${(task.photos && task.photos.length > 0) ? `
   <h2>Fotos</h2>
